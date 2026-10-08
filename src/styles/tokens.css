@@ -1,0 +1,79 @@
+:root {
+  /* Brand */
+  --teal: #00b386;
+  --teal-600: #009a73;
+  --teal-700: #00805f;
+  --navy: #0f2d4a;
+  --navy-900: #0a1f35;
+  --navy-700: #163c5f;
+  --mint: #e8f7f1;
+  --mint-200: #cfeee2;
+
+  /* Neutrals */
+  --white: #ffffff;
+  --off-white: #f8fafc;
+  --grey-100: #f1f5f9;
+  --grey-200: #e5e7eb;
+  --grey-300: #cbd5e1;
+  --text: #0f172a;
+  --text-2: #64748b;
+  --text-3: #94a3b8;
+
+  /* Semantic */
+  --map-blue: #3b82f6;
+  --soft-blue: #dbeafe;
+  --success: #22c55e;
+  --success-bg: #e8f8ee;
+  --warning: #f59e0b;
+  --warning-bg: #fef3c7;
+  --error: #ef4444;
+  --error-bg: #fee2e2;
+  --info-bg: var(--soft-blue);
+
+  /* Spacing — 8px grid */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+
+  /* Radii */
+  /* Radii — design/01 §08: 4 small · 8 input · 16 button · 24 card · 32 large */
+  --r-xs: 4px;
+  --r-sm: 8px;
+  --r-input: 8px;
+  --r-btn: 16px;
+  --r-card: 24px;
+  --r-panel: 32px;
+
+  /* Elevation */
+  --shadow-1: 0 1px 2px rgba(15, 45, 74, 0.06), 0 2px 8px rgba(15, 45, 74, 0.05);
+  --shadow-2: 0 4px 16px rgba(15, 45, 74, 0.1);
+  --shadow-3: 0 12px 40px rgba(15, 45, 74, 0.18);
+
+  /* Type */
+  --font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --fs-h1: 32px;
+  --fs-h2: 24px;
+  --fs-h3: 18px;
+  --fs-body: 16px;
+  --fs-sm: 14px;
+  --fs-cap: 12px;
+  /* Line heights — design/01 §03 (H1 32/40, H2 24/32, H3 18/28, Body 16/24, Caption 14/20) */
+  --lh-h1: 40px;
+  --lh-h2: 32px;
+  --lh-h3: 28px;
+  --lh-body: 24px;
+  --lh-cap: 20px;
+
+  /* Layout */
+  --nav-h: 68px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --tap: 48px;
+  --app-max: 460px;
+
+  --ease: cubic-bezier(0.22, 0.8, 0.3, 1);
+}
