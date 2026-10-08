@@ -10,6 +10,7 @@ import { distanceM } from '@/lib/geo'
 import { addMinutes, formatDistance, walkLabel } from '@/lib/format'
 import { useAsync } from '@/hooks/useAsync'
 import { api } from '@/services/api'
+import { isScheduleReady } from '@/domain/schedule'
 import { useApp } from '@/store/app'
 
 const WALK_M_PER_MIN = 70
@@ -50,7 +51,7 @@ export function PlanCommute() {
   const walkMin = Math.round(p.maxWalkMeters / WALK_M_PER_MIN)
 
   const schedule: ScheduleValue = { scheduleMode: p.scheduleMode ?? 'weekly', days: p.days, startDate: p.startDate, endDate: p.endDate, dates: p.dates ?? [], skipHolidays: p.skipHolidays ?? true }
-  const scheduleReady = schedule.scheduleMode === 'dates' ? schedule.dates.length > 0 : schedule.days.length > 0
+  const scheduleReady = isScheduleReady(schedule)
   const windowMin = (() => {
     const [h, m] = p.arriveBy.split(':').map(Number)
     const [hs, ms] = p.arriveWindowStart.split(':').map(Number)
@@ -180,6 +181,22 @@ export function PlanCommute() {
                   )
                 })}
               </div>
+            </div>
+          )}
+          {p.maxWalkMeters > 0 && (
+            <div>
+              <p className="eyebrow" style={{ marginBottom: 8 }}>Or choose your own meeting point</p>
+              <AddressField
+                key={'custom-pickup'}
+                label="Custom pickup point"
+                icon="target"
+                value={p.preferredPickup && !nearby.some((n) => n.label === p.preferredPickup?.label) ? p.preferredPickup.label : ''}
+                near={from.location}
+                places={points ?? []}
+                placeholder="Address, shop or landmark"
+                onSelect={(pl) => updatePlan({ preferredPickup: pl, maxWalkMeters: Math.max(p.maxWalkMeters, Math.min(1000, Math.ceil((distanceM(from.location, pl.location) * 1.3) / 250) * 250)) })}
+              />
+              {p.preferredPickup && distanceM(p.preferredPickup.location, from.location) * 1.3 > 1000 && <p className="field-error" role="alert" style={{ marginTop: 6 }}>That spot is over 1 km from {from.label} — pick somewhere closer or drivers can’t be matched.</p>}
             </div>
           )}
           <LiftyButton onClick={() => setSheet(null)}>Done</LiftyButton>

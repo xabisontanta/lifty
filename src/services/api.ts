@@ -13,9 +13,13 @@ import type {
   Role,
   ScheduleException,
   Weekday,
+  UserProfile,
+  PublicVerification,
 } from '@/domain/types'
 import { DRIVERS, INCOMING_REQUESTS, MATCHES, PICKUP_SHELL, RETURN_MATCHES } from '@/data/mock'
 import { isoDate } from '@/lib/format'
+import { computeMatches } from './matchingService'
+import { DEMO_LEGS, DEMO_PICKUP_POINTS, demoRouter } from '@/data/demoLegs'
 import { hasSupabase } from '@/lib/env'
 
 /**
@@ -60,6 +64,7 @@ export interface DriverLegSummary {
 export interface CommuteInstance {
   id: string
   legId: string
+  direction: LegDirection
   status: 'scheduled' | 'sharing' | 'underway' | 'completed' | 'cancelled'
   isDriver: boolean
   departsAt: number
@@ -69,8 +74,8 @@ export interface CommuteInstance {
   route: LatLng[]
   routeDurationS: number
   destination: Place
-  riders: { passengerId: string; status: string; firstName: string; lastInitial: string; avatarHue: number; pickup: Place; pickupTime: string }[]
-  driver: { id: string; firstName: string; lastInitial: string; rating: number; ratingCount: number; avatarHue: number }
+  riders: { passengerId: string; status: string; firstName: string; lastInitial: string; avatarHue: number; pickup: Place; pickupTime: string; driverArrivedAt?: number | null; passengerAtPickup?: boolean; collectedAt?: number | null; noShowAt?: number | null }[]
+  driver: { id: string; firstName: string; lastInitial: string; rating: number; ratingCount: number; avatarHue: number; verification: PublicVerification }
   vehicle: { make: string; model: string; colour: string; bodyType: 'sedan' | 'hatchback' | 'suv' | 'other'; registrationSummary: string; photoUrl?: string }
 }
 
@@ -109,18 +114,86 @@ export interface SafetyReport {
   body: string
   status: 'open' | 'reviewing' | 'closed'
   createdAt: number
+  reporterId?: string
+  subjectId?: string
+  reporterName?: string
+  subjectName?: string
+}
+
+export interface AccountSnapshot {
+  user: UserProfile
+  onboarded: boolean
+  avatarUrl?: string
+  preferences: { locationConsent: boolean; lowData: boolean; emergencyContact: string }
+  commutes: CommutePlan[]
+  driverSetup?: DriverSetupInput
+  documents: { kind: DocKind; status: 'pending' | 'verified' | 'rejected' }[]
+  verification: PublicVerification
+  exceptions: ScheduleException[]
+  pendingRequests: JoinRequest[]
+  savedAlert: boolean
+}
+
+export interface PickupChange {
+  id: string
+  legId: string
+  passengerId: string
+  passengerName: string
+  date: string
+  pickup: Place
+  status: 'pending' | 'approved' | 'declined'
+  createdAt: number
+}
+
+export interface Contribution {
+  id: string
+  legId: string
+  passengerId: string
+  passengerName: string
+  period: string
+  amount: number
+  status: 'due' | 'reported' | 'confirmed'
+  reportedAt?: number
+  confirmedAt?: number
+  note?: string
+}
+
+export interface CommuteHistoryEntry {
+  id: string
+  legId: string
+  direction: LegDirection
+  date: string
+  departsAt: number
+  status: 'scheduled' | 'sharing' | 'underway' | 'completed' | 'cancelled' | 'missed'
+  driverId: string
+  driverName: string
+  pickupLabel: string
+  destinationLabel: string
+  canRate: boolean
+  rated: boolean
+}
+
+export interface AdminHealth {
+  pendingDocuments: number
+  openReports: number
+  suspendedUsers: number
+  notifications: { pending: number; failed: number; delivered: number; providerConfigured: boolean }
+  jobs: { name: string; lastRun?: string; status: string; detail?: string }[]
 }
 
 export interface LiftyApi {
   // auth
-  signUp(input: { fullName: string; phone: string; password: string; role: Role }): Promise<{ resendInSeconds: number }>
+  signUp(input: { fullName: string; phone: string; role: Role }): Promise<{ resendInSeconds: number }>
   sendOtp(phone: string): Promise<{ resendInSeconds: number }>
   /** returns the server profile for returning users (null in demo mode) */
-  verifyOtp(phone: string, code: string): Promise<{ role: Role; firstName: string; lastInitial: string; hasSetup: boolean } | null>
+  verifyOtp(phone: string, code: string): Promise<AccountSnapshot | null>
+  getAccountSnapshot(): Promise<AccountSnapshot | null>
+  completeOnboarding(): Promise<void>
   signOut(): Promise<void>
   // onboarding
   savePassengerCommute(plan: CommutePlan): Promise<string>
   saveDriverSetup(setup: DriverSetupInput): Promise<void>
+  saveDriverSettings(legId: string, input: { seats: number; maxDeviationMin: number; monthlyContribution: number; departureTime?: string; days?: Weekday[] }): Promise<void>
   uploadPhoto(kind: 'avatar' | 'vehicle', file: File): Promise<string>
   uploadDocument(kind: DocKind, file: File, detail?: string): Promise<void>
   setConsent(input: { location?: boolean; terms?: boolean; emergencyContact?: string; lowData?: boolean }): Promise<void>
@@ -138,11 +211,22 @@ export interface LiftyApi {
   respondToRequest(id: string, decision: 'accept' | 'decline'): Promise<IncomingRequest>
   removeMember(legId: string, passengerId: string): Promise<void>
   markContributionPaid(legId: string, passengerId: string): Promise<void>
-  addException(e: Omit<ScheduleException, 'id'> & { legId?: string }): Promise<void>
+  addException(e: Omit<ScheduleException, 'id'>): Promise<ScheduleException>
+  listExceptions(): Promise<ScheduleException[]>
+  deleteException(id: string): Promise<void>
+  setPause(legId: string, paused: boolean): Promise<void>
+  requestPickupChange(input: { legId: string; date: string; pickup: Place }): Promise<void>
+  listPickupChanges(): Promise<PickupChange[]>
+  reviewPickupChange(id: string, approve: boolean): Promise<void>
+  listContributions(legId?: string): Promise<Contribution[]>
+  reportContribution(id: string, note?: string): Promise<void>
+  confirmContribution(id: string): Promise<void>
+  listHistory(): Promise<CommuteHistoryEntry[]>
+  setMatchAlert(enabled: boolean): Promise<void>
   // tracking
   getCurrentInstance(): Promise<CommuteInstance | null>
   // messaging + notifications
-  listMessages(clubId: string): Promise<ChatMessage[]>
+  listMessages(clubId: string, before?: number): Promise<ChatMessage[]>
   sendMessage(clubId: string, body: string): Promise<void>
   subscribeMessages(clubId: string, onMessage: (m: ChatMessage) => void): () => void
   listNotifications(): Promise<AppNotification[]>
@@ -150,7 +234,7 @@ export interface LiftyApi {
   subscribeNotifications(onNew: (n: AppNotification) => void): () => void
   savePushToken(token: string, platform: 'android' | 'ios'): Promise<void>
   // trust & safety
-  submitRating(input: { driverId: string; stars: number; tags: string[]; comment?: string; legId?: string }): Promise<void>
+  submitRating(input: { driverId: string; stars: number; tags: string[]; comment?: string; legId?: string; instanceId?: string }): Promise<void>
   submitReport(input: { kind: 'driver' | 'passenger' | 'incident' | 'safety'; body: string; subjectId?: string }): Promise<void>
   // privacy (POPIA)
   exportMyData(): Promise<unknown>
@@ -162,6 +246,8 @@ export interface LiftyApi {
   reviewDocument(id: string, approve: boolean, note?: string): Promise<void>
   listReports(): Promise<SafetyReport[]>
   updateReport(id: string, status: SafetyReport['status']): Promise<void>
+  getAdminHealth(): Promise<AdminHealth>
+  suspendUser(userId: string, suspended: boolean, reason: string): Promise<void>
 }
 
 export class ApiError extends Error {
@@ -242,7 +328,13 @@ const writeJson = (key: string, v: unknown) => {
 }
 const INCOMING_KEY = 'lifty.incoming'
 const readIncoming = () => readJson<IncomingRequest[]>(INCOMING_KEY, INCOMING_REQUESTS.map((r) => ({ ...r })))
-const ALL_MOCK_MATCHES = [...MATCHES, ...RETURN_MATCHES]
+const demoMatchCache = new Map<string, Match>()
+let lastSuggestions: string[] = []
+/** What would widen the search — shown on the no-match screen. */
+export const getLastMatchSuggestions = () => lastSuggestions
+export const setLastMatchSuggestions = (s: string[]) => {
+  lastSuggestions = s
+}
 const fileToDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
     const r = new FileReader()
@@ -270,6 +362,22 @@ export const mockApi: LiftyApi = {
     if (code === '000000') throw new ApiError("That code isn't right. Check the number and try again.", 'invalid')
     return null
   },
+  async getAccountSnapshot() { return null },
+  async completeOnboarding() {},
+  async saveDriverSettings() {},
+  async listExceptions() { return [] },
+  async deleteException() {},
+  async setPause() {},
+  async requestPickupChange() {},
+  async listPickupChanges() { return [] },
+  async reviewPickupChange() {},
+  async listContributions() { return [] },
+  async reportContribution() {},
+  async confirmContribution() {},
+  async listHistory() { return [] },
+  async setMatchAlert() {},
+  async getAdminHealth() { return { pendingDocuments: 0, openReports: 0, suspendedUsers: 0, notifications: { pending: 0, failed: 0, delivered: 0, providerConfigured: false }, jobs: [] } },
+  async suspendUser() {},
   async signOut() {},
   async savePassengerCommute() {
     await gate(200)
@@ -292,35 +400,23 @@ export const mockApi: LiftyApi = {
   },
   async findMatches(plan) {
     await gate(1100)
-    const pool = plan.direction === 'to_home' ? RETURN_MATCHES : MATCHES
-    const dated = plan.scheduleMode === 'dates'
-    const weekdayOf = (d: string) => (new Date(`${d}T12:00:00`).getDay() + 6) % 7
-    const days = dated ? [...new Set(plan.dates.map(weekdayOf))] : plan.days
-    const found = pool.filter((m) => m.walkingDistanceM <= plan.maxWalkMeters && m.days.some((d) => days.includes(d)))
-    return found
-      .map((m) => {
-        const base = { ...m, compatibility: scoreMatch(m, { ...plan, days: days as CommutePlan['days'] }), pricing: 'monthly' as const }
-        if (!dated) return base
-        // pay per day used: monthly ÷ commuting days in a normal month × booked days (first booked month)
-        const perDay = Math.ceil(m.monthlyContribution.driverContribution / (Math.max(m.days.length, 1) * 4.33))
-        const firstMonth = plan.dates[0]?.slice(0, 7)
-        const booked = plan.dates.filter((d) => d.startsWith(firstMonth ?? '') && m.days.includes(weekdayOf(d) as never)).length
-        const driverContribution = perDay * booked
-        return {
-          ...base,
-          pricing: 'per_day' as const,
-          perDayContribution: perDay,
-          bookedDays: booked,
-          monthlyContribution: { ...m.monthlyContribution, driverContribution, total: driverContribution + m.monthlyContribution.platformFee + m.monthlyContribution.processingFee },
-        }
-      })
-      .sort((a, b) => b.compatibility - a.compatibility)
+    const run = await computeMatches(plan, DEMO_LEGS, DEMO_PICKUP_POINTS, demoRouter())
+    lastSuggestions = run.suggestions
+    demoMatchCache.clear()
+    run.matches.forEach((m) => demoMatchCache.set(m.id, m))
+    return run.matches
   },
   async getMatch(id) {
     await gate(250)
-    const m = ALL_MOCK_MATCHES.find((x) => x.id === id)
-    if (!m) throw new ApiError('We couldn’t find that commute match.', 'not-found')
-    return { ...m, compatibility: m.compatibility || 90 }
+    // the same derived result the list showed; recomputed from the saved plan after a reload
+    let m = demoMatchCache.get(id)
+    if (!m) {
+      const saved = readJson<{ plan?: CommutePlan } | null>('lifty.state.v1', null)?.plan
+      if (saved) (await computeMatches(saved, DEMO_LEGS, DEMO_PICKUP_POINTS, demoRouter())).matches.forEach((x) => demoMatchCache.set(x.id, x))
+      m = demoMatchCache.get(id)
+    }
+    if (!m) throw new ApiError('This lift club is no longer a match for your commute.', 'not-found')
+    return m
   },
   async getDriver(id) {
     await gate(250)
@@ -375,7 +471,7 @@ export const mockApi: LiftyApi = {
   async markContributionPaid() {
     await gate(300)
   },
-  async addException() {},
+  async addException(e) { return { ...e, id: crypto.randomUUID() } },
   async getCurrentInstance() {
     return null
   },

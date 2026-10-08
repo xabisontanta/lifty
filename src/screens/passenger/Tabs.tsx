@@ -8,7 +8,7 @@ import { Avatar, BottomNavigation, Card, CardSkeleton, EmptyState, ErrorState, I
 import { MAIN_ROUTE, PICKUP_SHELL } from '@/data/mock'
 import type { LiftClub } from '@/domain/types'
 import { addMinutes, formatDate, formatDays, formatDistance, greeting, rand, timeAgo, walkLabel } from '@/lib/format'
-import { nextCommute } from '@/lib/club'
+import { nextClubCommute } from '@/lib/club'
 import { useApp } from '@/store/app'
 import { useAsync } from '@/hooks/useAsync'
 import { usePassengerClubs } from '@/hooks/useClubs'
@@ -34,7 +34,7 @@ export async function shareInvite(toast: (m: string, t?: 'success' | 'error' | '
 /* ---------- Layout with bottom navigation ---------- */
 export function PassengerTabs() {
   const { state } = useApp()
-  const { data: notes } = useAsync(() => api.listNotifications(), [])
+  const { data: notes } = useAsync(() => api.listNotifications(), [state.user?.id])
   const unread = (notes?.filter((n) => !n.read).length ?? 0) + (state.request && state.request.status !== 'accepted' ? 1 : 0)
   return (
     <Screen>
@@ -63,8 +63,8 @@ export function PassengerHome() {
   // pickup points near where the user actually is (after auto-locate), else near home
   const [here, setHere] = useState<{ lat: number; lng: number } | null>(null)
   const centre = here ?? home
-  const { data: points } = useAsync(() => api.listPickupPoints(centre), [centre.lat.toFixed(3), centre.lng.toFixed(3)])
-  const next = club ? nextCommute(club.days, club.pickupTime, state.exceptions, club.paused) : null
+  const { data: points } = useAsync(() => api.listPickupPoints(centre), [state.user?.id, centre.lat.toFixed(3), centre.lng.toFixed(3)])
+  const next = club ? nextClubCommute(club, state.exceptions) : null
   const pins = (points ?? []).slice(0, 6)
   return (
     <ScreenBody>
@@ -86,11 +86,11 @@ export function PassengerHome() {
             <StatusBadge tone={club.paused ? 'warning' : 'success'}>{club.paused ? 'Paused' : 'Active'}</StatusBadge>
           </div>
           <h2 className="h3" style={{ margin: '8px 0 2px' }}>{club.pickup.label} → {club.destination.label}</h2>
-          <p style={{ color: 'rgba(255,255,255,.75)' }}>with {club.driver.firstName} {club.driver.lastInitial}. · {formatDays(club.days)}</p>
+          <p style={{ color: 'rgba(255,255,255,.75)' }}>with {club.driver.firstName} {club.driver.lastInitial}. · {club.schedule?.scheduleMode === 'dates' ? `${club.schedule.dates.length} agreed dates` : formatDays(club.days)}</p>
           <div className="row-flex between" style={{ marginTop: 14 }}>
             <div>
               <p className="small" style={{ color: 'rgba(255,255,255,.65)' }}>Next commute</p>
-              <strong>{next ? next.label : 'No upcoming commute'}</strong>
+              <strong>{club.paused ? 'Paused — no pickups scheduled' : next ? next.label : 'No upcoming commute'}</strong>
             </div>
             <button className="btn btn-primary btn-sm" onClick={() => nav('/p/track')}><Icon name="navigation" size={18} /> Live tracking</button>
           </div>
@@ -121,11 +121,11 @@ export function PassengerHome() {
 
       <div className="map-frame" style={{ marginTop: 12 }}>
         <MapView fit={pins.length ? [home, ...pins.map((p) => p.location)] : [home, plan.destination.location]} height={320} padding={50} label="Your area with nearby pickup points" locate autoLocate onLocate={setHere}>
-          {pins.length === 0 && <RouteLine path={MAIN_ROUTE} animate={false} />}
+          {pins.length === 0 && !isLive() && <RouteLine path={MAIN_ROUTE} animate={false} />}
           {pins.map((p) => <LocationDot key={p.label + p.location.lat} at={p.location} color="#00b386" />)}
-          <PassengerMarker at={home} label="Home" />
+          {!!plan.origin.label && <PassengerMarker at={home} label="Home" />}
           {pins[0] && <PickupMarker at={pins[0].location} label={pins[0].label} />}
-          {pins.length === 0 && <DestinationMarker at={plan.destination.location} label={plan.destination.label} />}
+          {pins.length === 0 && !!plan.destination.label && <DestinationMarker at={plan.destination.location} label={plan.destination.label} />}
         </MapView>
       </div>
       <p className="small muted" style={{ margin: '8px 4px 0' }}><Icon name="pin" size={14} /> Green dots are community pickup points near you — garages, centres and safe meeting spots.</p>
@@ -200,9 +200,9 @@ function ClubLeg({ club }: { club: LiftClub }) {
   const nav = useNavigate()
   const { state } = useApp()
   const d = club.driver
-  const next = nextCommute(club.days, club.pickupTime, state.exceptions, club.paused)
+  const next = nextClubCommute(club, state.exceptions)
   const dropOff = addMinutes(club.pickupTime, 60)
-  const others = club.members.filter((m) => m.role === 'passenger' && m.id !== 'me')
+  const others = club.members.filter((m) => m.role === 'passenger' && m.id !== state.user?.id)
   return (
     <div className="stack-3">
       <Card className={`leg-card ${club.direction === 'to_home' ? 'evening' : ''}`}>
@@ -224,7 +224,9 @@ function ClubLeg({ club }: { club: LiftClub }) {
           <span className="small muted">~{dropOff}</span>
         </div>
         <div className="kv-list">
-          <div className="kv"><span className="kv-k"><Icon name="calendar" size={16} /> {formatDays(club.days)}</span><span className="kv-v">from {formatDate(club.startDate).replace(/^\w+, /, '')}</span></div>
+          <div className="kv"><span className="kv-k"><Icon name="calendar" size={16} /> {club.schedule?.scheduleMode === 'dates' ? `${club.schedule.dates.length} agreed dates` : formatDays(club.schedule?.days ?? club.days)}</span><span className="kv-v">from {formatDate(club.schedule?.startDate ?? club.startDate).replace(/^\w+, /, '')}</span></div>
+          {club.schedule?.scheduleMode === 'dates' && <p className="small muted">{club.schedule.dates.map(date => formatDate(date).replace(/,? \d{4}$/, '')).join(' · ')}</p>}
+          {club.schedule?.endDate && <p className="small muted">Ends {formatDate(club.schedule.endDate)}</p>}
           <button className="kv" style={{ background: 'none', border: 0, width: '100%', borderTop: '1px solid var(--grey-100)' }} onClick={() => nav('/p/payments')}>
             <span className="kv-k"><Icon name="wallet" size={16} /> Monthly contribution</span>
             <span className="kv-v strong">{rand(club.monthlyContribution)} <PaymentBadge status={club.paymentStatus} /></span>
@@ -262,13 +264,13 @@ function ClubLeg({ club }: { club: LiftClub }) {
 export function Inbox() {
   const nav = useNavigate()
   const { state } = useApp()
-  const { data, loading, error, retry } = useAsync(() => api.listNotifications(), [])
+  const { data, loading, error, retry } = useAsync(() => api.listNotifications(), [state.user?.id])
   const [items, setItems] = useState<AppNotification[]>([])
   useEffect(() => {
     if (data) setItems(data)
     if (data?.some((n) => !n.read)) void api.markNotificationsRead()
   }, [data])
-  useEffect(() => api.subscribeNotifications((n) => setItems((x) => [n, ...x])), [])
+  useEffect(() => { setItems([]); return api.subscribeNotifications((n) => setItems((x) => [n, ...x])) }, [state.user?.id])
   const chats = [state.club, state.returnClub].filter(Boolean) as LiftClub[]
   return (
     <ScreenBody>
@@ -299,10 +301,12 @@ export function Inbox() {
 
 /* ---------- Profile / Settings ---------- */
 export function PassengerProfile() {
+  const toast=useToast()
   const nav = useNavigate()
   const { state, update, reset } = useApp()
   const [switching, setSwitching] = useState(false)
-  const { data: admin } = useAsync(() => api.isAdmin(), [])
+  const [savingLowData, setSavingLowData] = useState(false)
+  const { data: admin } = useAsync(() => api.isAdmin(), [state.user?.id])
   const u = state.user
   return (
     <ScreenBody>
@@ -321,7 +325,7 @@ export function PassengerProfile() {
       <div className="list">
         <ProfileRow icon="route" title="My Commute" subtitle={state.club ? 'Active lift club' : 'Find a lift club'} onClick={() => nav('/p/commute')} />
         <ProfileRow icon="calendar" title="Schedule & exceptions" onClick={() => nav('/p/exceptions')} />
-        <ProfileRow icon="wallet" title="Payment methods" onClick={() => nav('/p/payments')} />
+        <ProfileRow icon="wallet" title="Contribution ledger" onClick={() => nav('/p/payments')} />
         <ProfileRow icon="pin" title="Addresses" subtitle={state.plan.origin.label} onClick={() => nav('/onboarding/passenger/1')} />
       </div>
       <SectionTitle>Privacy & data</SectionTitle>
@@ -329,12 +333,18 @@ export function PassengerProfile() {
         <div className="row">
           <span className="row-icon"><Icon name="lock" size={20} /></span>
           <span className="row-text"><span className="row-title">Live location during commutes</span><span className="row-sub">Only inside your commute window</span></span>
-          <Toggle label="Live location during commutes" checked={state.sharingConsent} onChange={(v) => { update({ sharingConsent: v }); void api.setConsent({ location: v }).catch(() => {}) }} />
+          <Toggle label="Live location during commutes" checked={state.sharingConsent} onChange={(v) => { update({ sharingConsent: v }); void api.setConsent({ location: v }).catch(e => { if(v) update({sharingConsent:false}); toast(e instanceof Error?e.message:'Consent could not be saved','error') }) }} />
         </div>
         <div className="row">
           <span className="row-icon"><Icon name="wifiOff" size={20} /></span>
           <span className="row-text"><span className="row-title">Low-data mode</span><span className="row-sub">Simple maps, fewer images, slower updates</span></span>
-          <Toggle label="Low-data mode" checked={state.lowData} onChange={(v) => { update({ lowData: v }); void api.setConsent({ lowData: v }).catch(() => {}) }} />
+          <Toggle label="Low-data mode" checked={state.lowData} onChange={async (v) => {
+            if (savingLowData) return
+            setSavingLowData(true)
+            try { await api.setConsent({ lowData: v }); update({ lowData: v }) }
+            catch (e) { toast(e instanceof Error ? e.message : 'Low-data preference could not be saved', 'error') }
+            finally { setSavingLowData(false) }
+          }} />
         </div>
         <ProfileRow icon="eye" title="Privacy & your data" subtitle="Download or delete your data" onClick={() => nav('/privacy')} />
       </div>
@@ -344,10 +354,11 @@ export function PassengerProfile() {
         <ProfileRow icon="help" title="Help & support" onClick={() => nav('/safety')} />
         {admin && <ProfileRow icon="settings" title="Admin console" subtitle="Verify drivers, review reports" onClick={() => nav('/admin')} />}
       </div>
+      <ProfileRow icon="calendar" title="Commute history" onClick={()=>nav('/history')} />
       <SectionTitle>Account</SectionTitle>
       <div className="list">
-        <ProfileRow icon="car" title="Become a driver" subtitle="Needs a short driver set-up" onClick={() => setSwitching(true)} />
-        <ProfileRow icon="logout" title="Sign out" danger onClick={async () => { await api.signOut().catch(() => {}); reset(); nav('/welcome', { replace: true }) }} />
+        {!isLive() && <ProfileRow icon="car" title="Become a driver" subtitle="Needs a short driver set-up" onClick={() => setSwitching(true)} />}
+        <ProfileRow icon="logout" title="Sign out" danger onClick={async () => {try{await api.signOut();reset();nav('/welcome',{replace:true})}catch(e){toast(e instanceof Error?e.message:'Could not sign out. Retry.','error')}}} />
       </div>
       <DevTools />
       <Modal open={switching} onClose={() => setSwitching(false)} title="Switch to driver?">

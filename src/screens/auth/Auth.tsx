@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { Logo } from '@/components/brand'
 import { Icon } from '@/components/ui/Icon'
 import { Banner, LiftyButton, ProgressStepper, Screen, ScreenBody, ScreenFooter, ScreenHeader, SecondaryButton, TextButton, TextField, useToast } from '@/components/ui/kit'
 import type { Role } from '@/domain/types'
-import { api, ApiError, getDataSource, setDataSource } from '@/services/api'
+import { api, ApiError, getDataSource, isLive, setDataSource } from '@/services/api'
 import { useApp } from '@/store/app'
 
 /* ---------- 01 Welcome (photo carousel per design 01) ---------- */
@@ -71,6 +71,7 @@ export function ChooseRole() {
   const nav = useNavigate()
   const { state, update } = useApp()
   const [role, setRole] = useState<Role | null>(state.role)
+  if(isLive()&&state.verified&&state.user) return <Navigate to={state.user.role==='driver'?'/d/home':'/p/home'} replace/>
   const options: { id: Role; title: string; body: string; img: string }[] = [
     { id: 'passenger', title: "I'm a Passenger", body: 'Find and join lift clubs for your regular commute.', img: '/images/role-passenger.webp' },
     { id: 'driver', title: "I'm a Driver", body: 'Offer spare seats along your existing commute.', img: '/images/role-driver.webp' },
@@ -84,7 +85,7 @@ export function ChooseRole() {
         </div>
         <div className="title-block center">
           <h1>How would you like to join Lifty?</h1>
-          <p>Choose one. You can switch later from your profile — it just needs a short set-up.</p>
+          <p>Choose your role. Each pilot account has one role.</p>
         </div>
         <div className="stack-3" role="radiogroup" aria-label="Choose your role">
           {options.map((o) => (
@@ -133,7 +134,6 @@ export function SignUp() {
   const { state, update } = useApp()
   const [name, setName] = useState(state.user?.fullName ?? '')
   const [phone, setPhone] = useState(digitsOf(state.phone))
-  const [password, setPassword] = useState('')
   const [agree, setAgree] = useState(false)
   const [loading, setLoading] = useState(false)
   const [touched, setTouched] = useState(false)
@@ -142,15 +142,14 @@ export function SignUp() {
   const digits = digitsOf(phone)
   const nameOk = name.trim().split(/\s+/).length >= 2
   const phoneOk = digits.length === 9
-  const passOk = password.length >= 8
-  const valid = nameOk && phoneOk && passOk && agree
+  const valid = nameOk && phoneOk && agree
 
   const keepUser = () => {
     const [first, ...rest] = name.trim().split(/\s+/)
     const last = rest[rest.length - 1] ?? ''
     update({
       phone: prettyPhone(digits),
-      user: { id: 'me', firstName: first, lastInitial: last.charAt(0).toUpperCase(), fullName: name.trim(), phone: `+27${digits}`, role: state.role ?? 'passenger', avatarHue: 160, memberSince: new Date().toISOString().slice(0, 10) },
+      user: isLive()?null:{ id: 'demo-user', firstName: first, lastInitial: last.charAt(0).toUpperCase(), fullName: name.trim(), phone: `+27${digits}`, role: state.role ?? 'passenger', avatarHue: 160, memberSince: new Date().toISOString().slice(0, 10) },
     })
   }
 
@@ -160,7 +159,7 @@ export function SignUp() {
     setLoading(true)
     setErr(null)
     try {
-      await api.signUp({ fullName: name.trim(), phone: `+27${digits}`, password, role: state.role ?? 'passenger' })
+      await api.signUp({ fullName: name.trim(), phone: `+27${digits}`, role: state.role ?? 'passenger' })
       keepUser()
       nav('/otp')
     } catch (e) {
@@ -185,8 +184,7 @@ export function SignUp() {
         </div>
         <form className="stack-4" onSubmit={(e) => { e.preventDefault(); void submit() }} noValidate>
           <TextField label="Full name" value={name} onChange={setName} autoComplete="name" placeholder="e.g. Ayesha Khan" valid={nameOk} error={touched && !nameOk ? 'Enter your first and last name.' : undefined} />
-          <TextField label="WhatsApp / mobile number" value={phone} onChange={setPhone} inputMode="tel" autoComplete="tel-national" prefix="🇿🇦 +27" placeholder="82 123 4567" valid={phoneOk} error={touched && !phoneOk ? 'Enter a valid 9-digit South African number.' : undefined} hint="We’ll send a 6-digit code to verify it. Your number is never shown to other members." />
-          <TextField label="Password" type="password" value={password} onChange={setPassword} autoComplete="new-password" icon="lock" valid={passOk} error={touched && !passOk ? 'Use at least 8 characters.' : undefined} />
+          <TextField label="Mobile number" value={phone} onChange={setPhone} inputMode="tel" autoComplete="tel-national" prefix="🇿🇦 +27" placeholder="82 123 4567" valid={phoneOk} error={touched && !phoneOk ? 'Enter a valid 9-digit South African number.' : undefined} hint="We’ll send a 6-digit code to verify it. Your number is never shown to other members." />
           <label className="row-flex" style={{ alignItems: 'flex-start', minHeight: 44 }}>
             <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} style={{ width: 22, height: 22, accentColor: 'var(--teal)', marginTop: 2 }} />
             <span className="small muted">
@@ -235,7 +233,7 @@ export function SignIn() {
         <div className="center" style={{ marginBottom: 8 }}><Logo size={34} /></div>
         <div className="title-block center">
           <h1>Welcome back</h1>
-          <p>We’ll send a code to your WhatsApp / mobile number.</p>
+          <p>We’ll send a code to your mobile number.</p>
         </div>
         <div className="stack-4">
           <TextField label="Mobile number" value={phone} onChange={setPhone} inputMode="tel" prefix="🇿🇦 +27" placeholder="82 123 4567" valid={digits.length === 9} />
@@ -255,7 +253,7 @@ export function Otp() {
   const nav = useNavigate()
   const loc = useLocation()
   const toast = useToast()
-  const { state, update } = useApp()
+  const { state, update, refreshAccount } = useApp()
   const [digits, setDigits] = useState<string[]>(Array(6).fill(''))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -294,15 +292,10 @@ export function Otp() {
     setError(null)
     try {
       const profile = await api.verifyOtp(state.phone, code)
-      // returning users (live) take their role from the server and skip onboarding if already set up
-      const role = profile?.role ?? state.role ?? 'passenger'
-      const onboarded = state.onboarded || !!profile?.hasSetup
-      update({
-        verified: true,
-        onboarded,
-        role,
-        user: profile ? { id: 'me', firstName: profile.firstName, lastInitial: profile.lastInitial, fullName: state.user?.fullName ?? profile.firstName, phone: state.phone, role, avatarHue: 160, memberSince: state.user?.memberSince ?? new Date().toISOString().slice(0, 10) } : state.user,
-      })
+      const role = profile?.user.role ?? state.role ?? 'passenger'
+      const onboarded = profile?.onboarded ?? false
+      if (profile) await refreshAccount()
+      else update({verified:true,role,onboarded:false})
       nav(onboarded ? (role === 'driver' ? '/d/home' : '/p/home') : role === 'driver' ? '/onboarding/driver/1' : '/onboarding/passenger/1', { replace: true })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not verify your code.')

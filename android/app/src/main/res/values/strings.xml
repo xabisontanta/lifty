@@ -4,4 +4,7 @@
     <string name="title_activity_main">Lifty</string>
     <string name="package_name">za.co.lifty.app</string>
     <string name="custom_url_scheme">za.co.lifty.app</string>
+    <string name="capacitor_background_geolocation_notification_channel_name">Commute location sharing</string>
+    <string name="capacitor_background_geolocation_notification_icon">drawable/ic_tracking</string>
+    <string name="capacitor_background_geolocation_notification_color">#00B386</string>
 </resources>

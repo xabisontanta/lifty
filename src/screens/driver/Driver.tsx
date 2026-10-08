@@ -21,6 +21,7 @@ import { instanceToMatch } from '@/services/liveApi'
 import { resetTrackingFeed } from '@/services/tracking'
 import { currentUserId } from '@/services/supabase'
 import { useApp } from '@/store/app'
+import { shareCommute } from '@/services/share'
 import { DevTools } from '../shared/Shared'
 import { NoCommuteNow } from '../passenger/Flow'
 
@@ -58,7 +59,7 @@ export function DriverHome() {
   const { data: reqs } = useAsync(() => api.listIncomingRequests(), [members.length])
   const pending = reqs?.filter((r) => r.status === 'pending') ?? []
   const income = legs.reduce((sum, l) => sum + l.members.length * l.monthlyContribution, 0)
-  const verified = Object.values(driver.docs).every(Boolean)
+  const verified = isLive()?Object.values(state.verification).every(v=>v==='verified'):Object.values(driver.docs).every(Boolean)
   return (
     <ScreenBody>
       <div className="home-greeting">
@@ -69,7 +70,7 @@ export function DriverHome() {
         <IconButton icon="bell" label="Requests and updates" onClick={() => nav('/d/inbox')} />
       </div>
 
-      {!verified && <div style={{ marginBottom: 12 }}><Banner tone="warning" icon="clock" action={<TextButton onClick={() => nav('/onboarding/driver/3')}>Finish</TextButton>}><strong>Verification in progress</strong>Upload your documents so passengers see you’re verified.</Banner></div>}
+      {!verified && <div style={{ marginBottom: 12 }}><Banner tone="warning" icon="clock" action={<TextButton onClick={() => nav('/onboarding/driver/3')}>Finish</TextButton>}><strong>Verification in progress</strong>Your latest ID, licence, registration and insurance must be approved before new passengers can match with you.</Banner></div>}
 
       <Card className="navy" as="section">
         <div className="row-flex between"><span className="eyebrow" style={{ color: 'rgba(255,255,255,.7)' }}>Today’s commute</span><StatusBadge tone="success">{members.length} passenger{members.length === 1 ? '' : 's'}</StatusBadge></div>
@@ -423,7 +424,7 @@ function DriverTrackingBody({ match, back, riderName }: { match: Match; back: ()
         <div className="actions-row">
           <button className="action" onClick={() => nav(`/chat/${match.id}`, { state: { name: paxName } })}><span className="a-ic"><Icon name="message" /></span>Message</button>
           <CallButton name={first} chatId={match.id} />
-          <button className="action" onClick={() => toast('Commute details shared', 'success')}><span className="a-ic"><Icon name="share" /></span>Share</button>
+          <button className="action" onClick={async()=>{try{const result=await shareCommute(`Lifty commute: ${match.pickup.label} to ${match.destination.label}. ${match.driver.firstName}, ${match.driver.vehicle.colour} ${match.driver.vehicle.make} ${match.driver.vehicle.model}, ${match.driver.vehicle.registrationSummary}.`);toast(result==='copied'?'Commute details copied':'Commute shared','success')}catch(e){if(!(e instanceof DOMException&&e.name==='AbortError'))toast(e instanceof Error?e.message:'Could not share','error')}}}><span className="a-ic"><Icon name="share" /></span>Share</button>
           <button className="action danger" onClick={() => nav('/safety?report=1')}><span className="a-ic"><Icon name="shield" /></span>Safety</button>
         </div>
         <p className="small muted center">{paxName}’s location is shared only until pickup is confirmed.</p>
@@ -472,7 +473,8 @@ export function Contributions() {
 export function Ratings() {
   const nav = useNavigate()
   const live = isLive()
-  const { data: me, loading } = useAsync(() => (live && currentUserId ? api.getDriver(currentUserId) : Promise.resolve(DRIVERS[0])), [live])
+  const {state}=useApp()
+  const { data: me, loading } = useAsync(() => live ? (state.user?api.getDriver(state.user.id):Promise.reject(new Error('Sign in first'))) : Promise.resolve(DRIVERS[0]), [live,state.user?.id])
   return (
     <Screen>
       <ScreenHeader title="Ratings & reviews" onBack={() => nav(-1)} />
@@ -498,12 +500,13 @@ export function Ratings() {
 /* ---------- Profile ---------- */
 export function DriverProfile() {
   const nav = useNavigate()
+  const toast = useToast()
   const { state, update, reset } = useApp()
   const [switching, setSwitching] = useState(false)
   const { data: admin } = useAsync(() => api.isAdmin(), [])
   const u = state.user
   const v = state.driver.vehicle
-  const allDocs = Object.values(state.driver.docs).every(Boolean)
+  const allDocs = isLive()?Object.values(state.verification).every(v=>v==='verified'):Object.values(state.driver.docs).every(Boolean)
   return (
     <ScreenBody>
       <div className="title-block"><h1>Profile</h1></div>
@@ -522,14 +525,15 @@ export function DriverProfile() {
         <ProfileRow icon="calendar" title="Schedule exceptions" onClick={() => nav('/d/exceptions')} />
         <ProfileRow icon="car" title="Vehicle & commute" subtitle="Update your car, photos or route" onClick={() => nav('/onboarding/driver/1')} />
       </div>
+      <ProfileRow icon="calendar" title="Commute history" onClick={()=>nav('/history')} />
       <SectionTitle>Account</SectionTitle>
       <div className="list">
         <ProfileRow icon="settings" title="Settings" subtitle="Detour, contribution, location, low-data" onClick={() => nav('/d/settings')} />
         <ProfileRow icon="eye" title="Privacy & your data" onClick={() => nav('/privacy')} />
         <ProfileRow icon="shield" title="Safety Centre" onClick={() => nav('/safety')} />
         {admin && <ProfileRow icon="settings" title="Admin console" subtitle="Verify drivers, review reports" onClick={() => nav('/admin')} />}
-        <ProfileRow icon="user" title="Become a passenger" subtitle="Needs a short passenger set-up" onClick={() => setSwitching(true)} />
-        <ProfileRow icon="logout" title="Sign out" danger onClick={async () => { await api.signOut().catch(() => {}); reset(); nav('/welcome', { replace: true }) }} />
+        {!isLive() && <ProfileRow icon="user" title="Become a passenger" subtitle="Needs a short passenger set-up" onClick={() => setSwitching(true)} />}
+        <ProfileRow icon="logout" title="Sign out" danger onClick={async () => {try{await api.signOut();reset();nav('/welcome',{replace:true})}catch(e){toast(e instanceof Error?e.message:'Could not sign out. Retry.','error')}}} />
       </div>
       <DevTools />
       <BottomSheet open={switching} onClose={() => setSwitching(false)} title="Switch to passenger?">
@@ -545,6 +549,7 @@ export function DriverProfile() {
 
 /* ---------- Settings ---------- */
 export function DriverSettings() {
+  const toast=useToast()
   const nav = useNavigate()
   const { state, update, updateDriver } = useApp()
   const d = state.driver
@@ -560,7 +565,7 @@ export function DriverSettings() {
           </Card>
           <TextField label="Monthly contribution per passenger (R)" value={String(d.monthlyContribution)} onChange={(v) => updateDriver({ monthlyContribution: Number(v.replace(/\D/g, '')) || 0 })} inputMode="numeric" hint="Changes apply to new passengers. Re-save your commute to publish." />
           <div className="list">
-            <div className="row"><span className="row-text"><span className="row-title">Share live location during commutes</span><span className="row-sub">Only within your commute window</span></span><Toggle label="Share live location during commutes" checked={state.sharingConsent} onChange={(v) => { update({ sharingConsent: v }); void api.setConsent({ location: v }).catch(() => {}) }} /></div>
+            <div className="row"><span className="row-text"><span className="row-title">Share live location during commutes</span><span className="row-sub">Only within your commute window</span></span><Toggle label="Share live location during commutes" checked={state.sharingConsent} onChange={(v) => { update({ sharingConsent: v }); void api.setConsent({ location: v }).catch(e => { if(v) update({sharingConsent:false}); toast(e instanceof Error?e.message:'Consent could not be saved','error') }) }} /></div>
             <div className="row"><span className="row-text"><span className="row-title">Low-data mode</span><span className="row-sub">Simple maps and slower location updates</span></span><Toggle label="Low-data mode" checked={state.lowData} onChange={(v) => { update({ lowData: v }); void api.setConsent({ lowData: v }).catch(() => {}) }} /></div>
           </div>
         </div>

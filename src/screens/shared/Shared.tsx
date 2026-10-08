@@ -13,6 +13,8 @@ import { hasSupabase } from '@/lib/env'
 import { useAsync } from '@/hooks/useAsync'
 import { api, getDataSource, getSimulation, isLive, setDataSource, setSimulation, type ChatMessage, type PendingDocument, type SafetyReport, type Simulation } from '@/services/api'
 import { getTrackingFeed } from '@/services/tracking'
+import {mergeMessages} from '@/lib/chat'
+import {exportArchive} from '@/services/dataExport'
 import { useApp } from '@/store/app'
 
 /* ---------- Developer / demo tools ---------- */
@@ -238,7 +240,7 @@ export function Safety() {
       <ScreenBody>
         <Card className="mint">
           <div className="row-flex"><span className="row-icon" style={{ background: '#fff' }}><Icon name="shieldCheck" size={22} /></span>
-            <div><strong>You’re travelling with a verified community</strong><p className="small muted">Every driver’s identity, licence and vehicle is checked before they can offer seats.</p></div></div>
+            <div><strong>You’re travelling with a verified community</strong><p className="small muted">Drivers need approved identity, licence, registration and insurance documents before appearing in matches.</p></div></div>
         </Card>
         <SectionTitle>During your commute</SectionTitle>
         <div className="list">
@@ -263,20 +265,20 @@ export function Safety() {
       </ScreenBody>
       <BottomSheet open={report} onClose={() => setReport(false)} title={kind === 'incident' ? 'Report Incident' : kind === 'driver' ? 'Report Driver' : 'Report Passenger'}>
         <div className="stack-3">
-          <p className="muted small">Tell us what happened. Our safety team reviews every report, and the person reported never sees who filed it. In an emergency, call 10111 first.</p>
+          <p className="muted small">Tell us what happened. Reports are queued for safety review. The person reported never sees who filed it. In an emergency, call 10111 first.</p>
           <textarea className="field-area" aria-label="What happened" placeholder="What happened?" value={text} onChange={(e) => setText(e.target.value)} />
           <LiftyButton loading={sending} disabled={text.trim().length < 5} onClick={async () => {
             setSending(true)
             try {
               await api.submitReport({ kind, body: text.trim(), subjectId: kind === 'driver' ? state.club?.driver.id : undefined })
-              setReport(false); setText(''); toast('Report sent. We’ll be in touch.', 'success')
+              setReport(false); setText(''); toast('Report saved for review.', 'success')
             } catch (e) { toast(e instanceof Error ? e.message : 'Could not send report', 'error') } finally { setSending(false) }
           }}>Send report</LiftyButton>
         </div>
       </BottomSheet>
       <BottomSheet open={editContact} onClose={() => setEditContact(false)} title="Emergency contact">
         <div className="stack-3">
-          <TextField label="Phone number" value={contact} onChange={setContact} inputMode="tel" icon="phone" hint="Only used if you trigger a safety alert." />
+          <TextField label="Phone number" value={contact} onChange={setContact} inputMode="tel" icon="phone" hint="Saved for your reference. Automatic contact alerts are not enabled in this pilot." />
           <LiftyButton onClick={async () => { update({ emergencyContact: contact }); await api.setConsent({ emergencyContact: contact }).catch(() => {}); setEditContact(false); toast('Emergency contact saved', 'success') }}>Save</LiftyButton>
         </div>
       </BottomSheet>
@@ -295,8 +297,9 @@ export function Chat() {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const end = useRef<HTMLDivElement>(null)
-  useEffect(() => { if (data) setMsgs(data) }, [data])
-  useEffect(() => api.subscribeMessages(id, (m) => setMsgs((x) => (x.some((y) => y.id === m.id) ? x : [...x, m]))), [id])
+  useEffect(()=>{setMsgs([])},[id])
+  useEffect(() => { if (data) setMsgs(prev=>mergeMessages(prev,data)) }, [data])
+  useEffect(() => api.subscribeMessages(id, (m) => setMsgs((x) => mergeMessages(x,[m]))), [id])
   useEffect(() => { end.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs])
   const send = async () => {
     const t = text.trim()
@@ -306,6 +309,7 @@ export function Chat() {
     try {
       // the new message arrives back through the realtime subscription
       await api.sendMessage(id, t)
+      retry()
     } catch {
       setText(t)
     } finally {
@@ -319,6 +323,7 @@ export function Chat() {
         {loading ? <CardSkeleton /> : error ? <ErrorState message={error.message} onRetry={retry} /> : (
           <div className="stack-2">
             {msgs.length === 0 && <p className="muted small center">Say hello — agree on the pickup spot and timing here.</p>}
+            {msgs.length>=100&&<SecondaryButton onClick={async()=>{const older=await api.listMessages(id,msgs[0].createdAt);setMsgs(current=>mergeMessages(current,older))}}>Load older messages</SecondaryButton>}
             {msgs.map((m) => (
               <div key={m.id} style={{ justifySelf: m.mine ? 'end' : 'start', maxWidth: '82%' }}>
                 <div style={{ padding: '10px 14px', borderRadius: 18, background: m.mine ? 'var(--teal)' : '#fff', color: m.mine ? '#fff' : 'var(--text)', boxShadow: 'var(--shadow-1)' }}>{m.body}</div>
@@ -346,11 +351,10 @@ export function Privacy() {
   const [busy, setBusy] = useState(false)
   const download = async () => {
     try {
-      const data = await api.exportMyData()
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const blob = await exportArchive()
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
-      a.download = `lifty-my-data-${isoDate(0)}.json`
+      a.download = `lifty-my-data-${isoDate(0)}.zip`
       a.click()
       URL.revokeObjectURL(a.href)
       toast('Your data was downloaded', 'success')
@@ -378,7 +382,7 @@ export function Privacy() {
             <p className="small muted" style={{ marginTop: 6 }}>You can access, correct or delete your personal information at any time, and withdraw location consent in Profile. Questions or complaints: privacy@lifty.co.za, or the Information Regulator (inforegulator.org.za).</p>
           </Card>
           <div className="list">
-            <ProfileRow icon="upload" title="Download my data" subtitle="A copy of everything we hold about you (JSON)" onClick={download} />
+            <ProfileRow icon="upload" title="Download my data" subtitle="Your owned records and stored files (ZIP)" onClick={download} />
             <ProfileRow icon="trash" title="Delete my account" subtitle="Removes your profile, commutes and lift-club memberships" danger onClick={() => setConfirm(true)} />
           </div>
           <TextButton onClick={() => nav('/terms')}>Terms of Service</TextButton>
@@ -422,6 +426,9 @@ export function Admin() {
   const { data: allowed, loading: checking } = useAsync(() => api.isAdmin(), [])
   const docs = useAsync(() => (allowed ? api.listPendingDocuments() : Promise.resolve([])), [allowed])
   const reports = useAsync(() => (allowed ? api.listReports() : Promise.resolve([])), [allowed])
+  const health=useAsync(()=>allowed?api.getAdminHealth():Promise.resolve(null),[allowed])
+  const [subject,setSubject]=useState('')
+  const [reason,setReason]=useState('')
   const [open, setOpen] = useState<PendingDocument | null>(null)
   const [url, setUrl] = useState<string | null>(null)
   const [note, setNote] = useState('')
@@ -439,7 +446,7 @@ export function Admin() {
     if (!open) return
     try {
       await api.reviewDocument(open.id, approve, note || undefined)
-      setHidden((h) => [...h, open.id])
+      setHidden((h) => [...h, open.id]);health.retry();docs.retry()
       toast(approve ? 'Document approved' : 'Document rejected — the driver was notified', 'success')
       setOpen(null)
       setNote('')
@@ -453,6 +460,16 @@ export function Admin() {
     <Screen>
       <ScreenHeader title="Admin console" subtitle={isLive() ? 'Live data' : 'Demo data'} onBack={() => nav(-1)} />
       <ScreenBody>
+        <SectionTitle>Pilot operations</SectionTitle>
+        {health.error&&<ErrorState message={health.error.message} onRetry={health.retry}/>}
+        {health.data&&<Card><p>{health.data.pendingDocuments} pending documents · {health.data.openReports} open reports · {health.data.suspendedUsers} suspended accounts</p>
+         <p className="small muted">Push: {health.data.notifications.providerConfigured?'Configured':'Firebase configuration required'} · {health.data.notifications.pending} pending · {health.data.notifications.failed} failed · {health.data.notifications.delivered} delivered</p>
+         {health.data.jobs.map(j=><p className="small" key={j.name}>{j.name}: {j.status}{j.lastRun?' · '+j.lastRun:''}</p>)}
+         <TextButton onClick={health.retry}>Refresh job health</TextButton>
+        </Card>}
+        <Card style={{marginTop:12}}><TextField label="Account ID" value={subject} onChange={setSubject}/><TextField label="Safety reason" value={reason} onChange={setReason}/>
+          <div className="row-flex">{[true,false].map(suspended=><SecondaryButton key={String(suspended)} tone={suspended?'danger':undefined} disabled={!subject||(!reason&&suspended)} onClick={async()=>{try{await api.suspendUser(subject,suspended,reason);health.retry();toast(suspended?'Account suspended':'Account restored','success')}catch(e){toast(e instanceof Error?e.message:'Could not update account','error')}}}>{suspended?'Suspend':'Restore'}</SecondaryButton>)}</div>
+        </Card>
         <SectionTitle>Verification queue ({pending.length})</SectionTitle>
         {docs.loading ? <CardSkeleton /> : docs.error ? <ErrorState message={docs.error.message} onRetry={docs.retry} /> : pending.length === 0 ? (
           <p className="muted small">All caught up — no documents waiting.</p>
@@ -469,11 +486,13 @@ export function Admin() {
             {(reports.data as SafetyReport[]).map((r) => (
               <Card key={r.id}>
                 <div className="row-flex between"><StatusBadge tone={r.status === 'open' ? 'warning' : r.status === 'closed' ? 'neutral' : 'info'}>{r.status}</StatusBadge><span className="small muted">{r.kind} · {timeAgo(r.createdAt)}</span></div>
+                <p className="small muted">Reported by {r.reporterName??r.reporterId??'Member'}{r.subjectId?' · Subject: '+(r.subjectName??r.subjectId):''}</p>
+                {r.subjectId&&<TextButton onClick={()=>setSubject(r.subjectId!)}>Review this account</TextButton>}
                 <p className="small" style={{ margin: '8px 0' }}>{r.body}</p>
                 {r.status !== 'closed' && (
                   <div className="row-flex">
-                    <SecondaryButton size="sm" onClick={async () => { await api.updateReport(r.id, 'reviewing').catch(() => {}); reports.retry() }}>Reviewing</SecondaryButton>
-                    <SecondaryButton size="sm" onClick={async () => { await api.updateReport(r.id, 'closed').catch(() => {}); reports.retry() }}>Close</SecondaryButton>
+                    <SecondaryButton size="sm" onClick={async () => { try{await api.updateReport(r.id,'reviewing');reports.retry()}catch(e){toast(e instanceof Error?e.message:'Could not update','error')} }}>Reviewing</SecondaryButton>
+                    <SecondaryButton size="sm" onClick={async () => { try{await api.updateReport(r.id,'closed');reports.retry()}catch(e){toast(e instanceof Error?e.message:'Could not update','error')} }}>Close</SecondaryButton>
                   </div>
                 )}
               </Card>

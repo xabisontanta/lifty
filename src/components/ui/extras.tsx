@@ -14,7 +14,9 @@ import { Avatar, BottomSheet, SecondaryButton, useToast } from './kit'
 
 /* ---------- Address autocomplete (Mapbox, South Africa) ---------- */
 
-export function AddressField({ label, value, onSelect, onText, icon = 'pin', hint, near, placeholder, places = [], locationActions = true }: { label: string; value: string; onSelect: (p: Place) => void; onText?: (t: string) => void; icon?: IconName; hint?: string; near?: LatLng; placeholder?: string; /** Lifty pickup points etc., matched by name */ places?: Place[]; /** show "Use my current location" + "Choose on map" */ locationActions?: boolean }) {
+const NO_PLACES: Place[] = []
+
+export function AddressField({ label, value, onSelect, onText, icon = 'pin', hint, near, placeholder, places = NO_PLACES, locationActions = true }: { label: string; value: string; onSelect: (p: Place) => void; onText?: (t: string) => void; icon?: IconName; hint?: string; near?: LatLng; placeholder?: string; /** Lifty pickup points etc., matched by name */ places?: Place[]; /** show "Use my current location" + "Choose on map" */ locationActions?: boolean }) {
   const id = useId()
   const [text, setText] = useState(value)
   const [open, setOpen] = useState(false)
@@ -34,7 +36,7 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
 
   useEffect(() => {
     if (!open || picked.current || text.trim().length < 3) {
-      setItems([])
+      setItems((prev) => (prev.length ? [] : prev))
       return
     }
     const q = text.trim().toLowerCase()
@@ -47,30 +49,37 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
       return
     }
     setLoading(true)
+    let stale = false // a newer keystroke supersedes this request
     const t = setTimeout(() => {
       searchPlaces(text, near)
         .then((r) => {
+          if (stale) return
           setItems([...local, ...r])
           setErr(null)
         })
         .catch((e) => {
+          if (stale) return
           setItems(local)
           setErr(e instanceof Error ? e.message : 'Search failed')
         })
-        .finally(() => setLoading(false))
+        .finally(() => !stale && setLoading(false))
     }, 280)
-    return () => clearTimeout(t)
-  }, [text, open, near, places])
+    return () => {
+      stale = true
+      clearTimeout(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `near` is compared by value
+  }, [text, open, near?.lat, near?.lng, places])
 
-  const commit = (p: Place) => {
+  const commit = (p: Place, source: NonNullable<Place['source']> = 'manual') => {
     picked.current = true
     setText(p.label)
     setOpen(false)
     setDirty(false)
     setErr(null)
-    onSelect({ label: p.label, area: p.area, location: p.location })
+    onSelect({ label: p.label, area: p.area, location: p.location, placeId: p.placeId, source: p.source ?? source })
   }
-  const choose = (p: PlaceSuggestion) => commit({ label: p.label, area: p.area, location: p.location })
+  const choose = (p: PlaceSuggestion) => commit({ label: p.label, area: p.area, location: p.location, placeId: p.id.startsWith('local:') ? undefined : p.id }, p.id.startsWith('local:') ? 'saved_location' : 'autocomplete')
 
   const fillFromMyLocation = async () => {
     setLocating(true)
@@ -79,7 +88,7 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
       const fix = await getCurrentPosition()
       const at = { lat: fix.lat, lng: fix.lng }
       const a = await reversePlace(at)
-      commit({ label: a.label, area: a.area, location: at })
+      commit({ label: a.label, area: a.area, location: at }, 'current_location')
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Location unavailable')
     } finally {
@@ -153,7 +162,7 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
         </div>
       )}
       {picking && frame && createPortal(
-        <MapPicker title={label} start={near ?? { lat: -29.5389, lng: 31.2117 }} onClose={() => setPicking(false)} onPick={(p) => { setPicking(false); commit(p) }} />,
+        <MapPicker title={label} start={near ?? { lat: -29.5389, lng: 31.2117 }} onClose={() => setPicking(false)} onPick={(p) => { setPicking(false); commit(p, 'map_pin') }} />,
         frame,
       )}
     </div>

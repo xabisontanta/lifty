@@ -13,9 +13,12 @@ import { DriverCommute, DriverSchedule, DriverVehicle, DriverVerification, Passe
 import { Inbox, MyCommute, PassengerHome, PassengerProfile, PassengerTabs } from '@/screens/passenger/Tabs'
 import { PlanCommute } from '@/screens/passenger/Plan'
 import { Accepted, Complete, DriverPublicProfile, Finding, MatchDetail, Matches, NoMatch, PassengerTracking, RateDriver, RequestSent } from '@/screens/passenger/Flow'
+import {ContributionLedger,CommuteHistory,ScheduleExceptions} from '@/screens/shared/Pilot'
 import { Admin, Chat, Exceptions, Payments, Privacy, Safety, Terms } from '@/screens/shared/Shared'
 import { Contributions, DriverHome, DriverProfile, DriverSettings, DriverTabs, DriverToday, MyRoute, Ratings, RequestDetail, Requests, Seats } from '@/screens/driver/Driver'
 import { DriverInbox } from '@/screens/driver/Inbox'
+import {DriverControls,DriverLiveTrip} from '@/screens/driver/PilotDriver'
+import {currentUserId,sb} from '@/services/supabase'
 
 function homeFor(role: string | null, onboarded: boolean): string {
   if (!role) return '/welcome'
@@ -36,18 +39,29 @@ function Landing() {
   return <Navigate to={homeFor(state.role, state.onboarded)} replace />
 }
 
+function SetupGuard({role,children}:{role:'passenger'|'driver';children:ReactElement}) {
+  const {state}=useApp()
+  if(isLive()&&(!state.user||state.role!==role))return <Navigate to={homeFor(state.role,state.onboarded)} replace/>
+  return children
+}
+
 /** App-wide realtime alerts: in-app toast + device notification; push registration on native. */
 function LiveAlerts() {
   const toast = useToast()
-  const { state } = useApp()
+  const { state, update } = useApp()
   useEffect(() => {
     if (!state.onboarded || !isLive()) return
-    void registerPush((token, platform) => api.savePushToken(token, platform))
-    return api.subscribeNotifications((n) => {
+    const accountId=state.user?.id
+    let active=true
+    let removePush:(()=>void)|undefined
+    void registerPush(async(token,platform)=>{if(active&&currentUserId===accountId)await api.savePushToken(token,platform)}).then(remove=>{if(active)removePush=remove;else remove()})
+    const unsubscribe=api.subscribeNotifications((n) => {
+      if(n.kind==='verification'&&accountId)void sb().rpc('driver_verification',{p_user:accountId}).then(({data,error})=>{if(active&&!error&&data)update({verification:data})})
       toast(n.title, n.kind === 'declined' || n.kind === 'no_show' ? 'error' : 'success')
       void notifyLocal(n.title, n.body)
     })
-  }, [state.onboarded, toast])
+    return()=>{active=false;removePush?.();unsubscribe()}
+  }, [state.onboarded,state.user?.id, toast])
   useEffect(() => {
     if (state.onboarded) void ensureNotificationPermission()
   }, [state.onboarded])
@@ -57,6 +71,8 @@ function LiveAlerts() {
 export default function App() {
   const online = useOnline()
   const { state } = useApp()
+  if (!state.authReady) return <div className="app-frame center" role="status">Restoring your account…</div>
+  if (state.authError) return <div className="app-frame center"><p role="alert">{state.authError}</p><button className="btn btn-primary" onClick={()=>location.reload()}>Retry</button><button className="btn btn-text" onClick={()=>void api.signOut()}>Sign out</button></div>
   return (
     <MapSettings.Provider value={{ lowData: state.lowData }}>
     <ErrorBoundary>
@@ -75,13 +91,13 @@ export default function App() {
         <Route path="/signin" element={<SignIn />} />
         <Route path="/otp" element={<Otp />} />
 
-        <Route path="/onboarding/passenger/1" element={<PassengerCommute />} />
-        <Route path="/onboarding/passenger/2" element={<PassengerSchedule />} />
-        <Route path="/onboarding/passenger/3" element={<PassengerConsent />} />
-        <Route path="/onboarding/driver/1" element={<DriverVehicle />} />
-        <Route path="/onboarding/driver/2" element={<DriverCommute />} />
-        <Route path="/onboarding/driver/3" element={<DriverVerification />} />
-        <Route path="/onboarding/driver/4" element={<DriverSchedule />} />
+        <Route path="/onboarding/passenger/1" element={<SetupGuard role="passenger"><PassengerCommute /></SetupGuard>} />
+        <Route path="/onboarding/passenger/2" element={<SetupGuard role="passenger"><PassengerSchedule /></SetupGuard>} />
+        <Route path="/onboarding/passenger/3" element={<SetupGuard role="passenger"><PassengerConsent /></SetupGuard>} />
+        <Route path="/onboarding/driver/1" element={<SetupGuard role="driver"><DriverVehicle /></SetupGuard>} />
+        <Route path="/onboarding/driver/2" element={<SetupGuard role="driver"><DriverCommute /></SetupGuard>} />
+        <Route path="/onboarding/driver/3" element={<SetupGuard role="driver"><DriverVerification /></SetupGuard>} />
+        <Route path="/onboarding/driver/4" element={<SetupGuard role="driver"><DriverSchedule /></SetupGuard>} />
 
         {/* Passenger */}
         <Route path="/p" element={<Guard role="passenger"><PassengerTabs /></Guard>}>
@@ -102,8 +118,8 @@ export default function App() {
         <Route path="/p/complete" element={<Guard role="passenger"><Complete /></Guard>} />
         <Route path="/p/rate" element={<Guard role="passenger"><RateDriver /></Guard>} />
         <Route path="/p/driver/:id" element={<Guard role="passenger"><DriverPublicProfile /></Guard>} />
-        <Route path="/p/payments" element={<Guard role="passenger"><Payments /></Guard>} />
-        <Route path="/p/exceptions" element={<Guard role="passenger"><Exceptions /></Guard>} />
+        <Route path="/p/payments" element={<Guard role="passenger"><ContributionLedger /></Guard>} />
+        <Route path="/p/exceptions" element={<Guard role="passenger"><ScheduleExceptions /></Guard>} />
 
         {/* Driver */}
         <Route path="/d" element={<Guard role="driver"><DriverTabs /></Guard>}>
@@ -115,14 +131,15 @@ export default function App() {
           <Route path="profile" element={<DriverProfile />} />
         </Route>
         <Route path="/d/request/:id" element={<Guard role="driver"><RequestDetail /></Guard>} />
-        <Route path="/d/today" element={<Guard role="driver"><DriverToday /></Guard>} />
-        <Route path="/d/seats" element={<Guard role="driver"><Seats /></Guard>} />
-        <Route path="/d/contributions" element={<Guard role="driver"><Contributions /></Guard>} />
+        <Route path="/d/today" element={<Guard role="driver">{isLive()?<DriverLiveTrip/>:<DriverToday/>}</Guard>} />
+        <Route path="/d/seats" element={<Guard role="driver"><DriverControls seatsOnly /></Guard>} />
+        <Route path="/d/contributions" element={<Guard role="driver"><ContributionLedger /></Guard>} />
         <Route path="/d/ratings" element={<Guard role="driver"><Ratings /></Guard>} />
-        <Route path="/d/settings" element={<Guard role="driver"><DriverSettings /></Guard>} />
-        <Route path="/d/exceptions" element={<Guard role="driver"><Exceptions /></Guard>} />
+        <Route path="/d/settings" element={<Guard role="driver"><DriverControls /></Guard>} />
+        <Route path="/d/exceptions" element={<Guard role="driver"><ScheduleExceptions /></Guard>} />
 
         {/* Shared */}
+        <Route path="/history" element={state.user?<CommuteHistory/>:<Navigate to="/signin" replace/>} />
         <Route path="/safety" element={<Safety />} />
         <Route path="/chat/:id" element={<Chat />} />
         <Route path="/privacy" element={<Privacy />} />

@@ -8,12 +8,13 @@ import { MAIN_ROUTE } from '@/data/mock'
 export function usePassengerClubs() {
   const { state, update } = useApp()
   const live = isLive()
-  const q = useAsync(() => (live ? api.getMyClubs() : Promise.resolve(null)), [live])
+  const accountId = state.user?.id
+  const q = useAsync(async () => ({ accountId, clubs: live && accountId ? await api.getMyClubs() : null }), [live, accountId])
   useEffect(() => {
-    if (!q.data) return
-    const c = q.data.asPassenger
+    if (!q.data?.clubs || q.data.accountId !== accountId) return
+    const c = q.data.clubs.asPassenger
     update({ club: c.find((x) => x.direction === 'to_work') ?? null, returnClub: c.find((x) => x.direction === 'to_home') ?? null })
-  }, [q.data, update])
+  }, [q.data, accountId, update])
   return { club: state.club, returnClub: state.returnClub, loading: live && q.loading && !state.club, error: live ? q.error : null, retry: q.retry }
 }
 
@@ -21,8 +22,9 @@ export function usePassengerClubs() {
 export function useDriverLegs(): { legs: DriverLegSummary[]; loading: boolean; error: Error | null; retry: () => void } {
   const { state } = useApp()
   const live = isLive()
-  const q = useAsync(() => (live ? api.getMyClubs() : Promise.resolve(null)), [live, state.driver.members.length])
-  if (live) return { legs: q.data?.asDriver ?? [], loading: q.loading, error: q.error, retry: q.retry }
+  const accountId = state.user?.id
+  const q = useAsync(async () => ({ accountId, clubs: live && accountId ? await api.getMyClubs() : null }), [live, accountId, state.driver.members.length])
+  if (live) return { legs: q.data && q.data.accountId === accountId ? q.data.clubs?.asDriver ?? [] : [], loading: q.loading, error: q.error, retry: q.retry }
   const d = state.driver
   const legs: DriverLegSummary[] = [
     {

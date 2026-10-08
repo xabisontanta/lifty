@@ -1,11 +1,13 @@
 import { LocalNotifications } from '@capacitor/local-notifications'
 import { PushNotifications } from '@capacitor/push-notifications'
 import { isNative } from './location'
+import {Capacitor,type PluginListenerHandle} from '@capacitor/core'
+import {notificationDestination} from './notificationRoutes'
 
 /**
  * Commute alerts ("Driver 5 min away", "Driver arrived", "You're in!").
  * Native: local notifications + push registration (token stored server-side;
- * sending requires an FCM/APNs server key configured on the backend).
+ * sending requires the Android Firebase service account on the backend).
  * Web: the Notification API while the tab is open.
  */
 
@@ -40,14 +42,18 @@ export async function notifyLocal(title: string, body: string) {
   }
 }
 
-export async function registerPush(saveToken: (token: string, platform: 'android' | 'ios') => Promise<void>) {
-  if (!isNative()) return
+export async function registerPush(saveToken: (token: string, platform: 'android' | 'ios') => Promise<void>):Promise<()=>void> {
+  const handles:PluginListenerHandle[]=[]
+  const cleanup=()=>handles.forEach(h=>void h.remove())
+  if (!isNative() || Capacitor.getPlatform()!=='android') return cleanup
   try {
     const perm = await PushNotifications.requestPermissions()
-    if (perm.receive !== 'granted') return
-    await PushNotifications.addListener('registration', (t) => void saveToken(t.value, /iPhone|iPad/.test(navigator.userAgent) ? 'ios' : 'android'))
+    if (perm.receive !== 'granted') return cleanup
+    handles.push(await PushNotifications.addListener('registration',t=>{try{localStorage.setItem('lifty.push.device',t.value)}catch{};void saveToken(t.value,'android').catch(()=>{})}))
+    handles.push(await PushNotifications.addListener('pushNotificationActionPerformed',event=>{window.location.assign(notificationDestination(event.notification.data?.link))}))
     await PushNotifications.register()
   } catch {
     /* push requires google-services.json / APNs setup in the native projects */
   }
+  return cleanup
 }

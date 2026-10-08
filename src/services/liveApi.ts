@@ -14,15 +14,18 @@ import type {
 import { isoDate } from '@/lib/format'
 import {
   ApiError,
+  setLastMatchSuggestions,
   type AppNotification,
   type ChatMessage,
   type CommuteInstance,
   type DriverLegSummary,
   type LiftyApi,
 } from './api'
-import { publicFileUrl, sb } from './supabase'
+import { publicFileUrl, sb, currentUserId } from './supabase'
+import { pilotMethods, pilotRpc } from './pilotApi'
 import { reverseGeocode } from './mapbox'
-import { holidayName, holidaysFor } from '@/lib/holidays'
+import { env } from '@/lib/env'
+import { holidayName } from '@/lib/holidays'
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- RPCs return jsonb shaped in SQL */
 type J = any
@@ -49,7 +52,7 @@ function toDriver(d: J, v: J, seatsAvailable = 0, routeSummary = ''): DriverProf
     avatarUrl: publicFileUrl('avatars', d.avatarPath),
     rating: Number(d.rating ?? 0),
     ratingCount: Number(d.ratingCount ?? 0),
-    verification: { identity: status, vehicle: vStatus(v?.status ?? d?.identityStatus), licence: status },
+    verification: d?.verification ?? { identity: status, vehicle: vStatus(v?.status), licence: 'pending', insurance: 'pending' },
     vehicle: {
       make: v?.make ?? '',
       model: v?.model ?? '',
@@ -89,6 +92,7 @@ function toMatch(j: J): Match {
     pickupEta: j.pickupEta,
     arrivalEta: j.arrivalEta,
     days: days(j.days),
+    coveredDays:days(j.coveredDays),uncoveredDays:days(j.uncoveredDays),coveredDates:j.coveredDates??[],uncoveredDates:j.uncoveredDates??[],partial:(j.uncoveredDays?.length??0)>0||(j.uncoveredDates?.length??0)>0,
     availableSeats: Number(j.availableSeats),
     // v1: contributions are tracked, not processed — no platform or processing fee is added.
     monthlyContribution: { driverContribution: contribution, platformFee: 0, processingFee: 0, total: contribution },
@@ -98,6 +102,12 @@ function toMatch(j: J): Match {
     perDayContribution: j.perDayContribution != null ? Number(j.perDayContribution) : undefined,
     bookedDays: j.bookedDays != null ? Number(j.bookedDays) : undefined,
     members: (j.members ?? []).map((m: J, i: number) => ({ firstName: m.firstName, avatarHue: hueFor(m.firstName + i), avatarUrl: publicFileUrl('avatars', m.avatarPath) })),
+    // set by the road-routed find-matches Edge Function (absent on the database estimate)
+    explanation: Array.isArray(j.explanation) ? j.explanation : undefined,
+    pickupDeviationMinutes: j.pickupDeviationMinutes != null ? Number(j.pickupDeviationMinutes) : undefined,
+    walkingEstimated: j.walkingEstimated === true || undefined,
+    routingEstimated: j.routing !== 'road' || undefined,
+    quoteId: typeof j.quoteId==='string'?j.quoteId:undefined,
   }
 }
 
@@ -140,14 +150,14 @@ const COMMUTE_KEY = 'lifty.commuteIds'
 const matchCache = new Map<string, Match & { commuteId: string }>()
 const commuteIds = (): Record<string, string> => {
   try {
-    return JSON.parse(localStorage.getItem(COMMUTE_KEY) || '{}')
+    return JSON.parse(localStorage.getItem(`${COMMUTE_KEY}:${currentUserId}`) || '{}')
   } catch {
     return {}
   }
 }
 const setCommuteId = (direction: string, id: string) => {
   try {
-    localStorage.setItem(COMMUTE_KEY, JSON.stringify({ ...commuteIds(), [direction]: id }))
+    localStorage.setItem(`${COMMUTE_KEY}:${currentUserId}`, JSON.stringify({ ...commuteIds(), [direction]: id }))
   } catch {
     /* ignore */
   }
@@ -162,6 +172,7 @@ function toInstance(j: J): CommuteInstance {
   return {
     id: j.id,
     legId: j.legId,
+    direction:j.direction,
     status: j.status,
     isDriver: !!j.isDriver,
     departsAt: new Date(j.departsAt).getTime(),
@@ -179,8 +190,9 @@ function toInstance(j: J): CommuteInstance {
       avatarHue: hueFor(r.passengerId),
       pickup: toPlace(r.pickup),
       pickupTime: r.pickupTime,
+      driverArrivedAt:r.driverArrivedAt?new Date(r.driverArrivedAt).getTime():null,passengerAtPickup:!!r.passengerAtPickup,collectedAt:r.collectedAt?new Date(r.collectedAt).getTime():null,noShowAt:r.noShowAt?new Date(r.noShowAt).getTime():null,
     })),
-    driver: { id: j.driver.id, firstName: j.driver.firstName, lastInitial: j.driver.lastInitial, rating: Number(j.driver.rating), ratingCount: Number(j.driver.ratingCount), avatarHue: hueFor(j.driver.id) },
+    driver: { id: j.driver.id, firstName: j.driver.firstName, lastInitial: j.driver.lastInitial, rating: Number(j.driver.rating), ratingCount: Number(j.driver.ratingCount), avatarHue: hueFor(j.driver.id),verification:j.driver.verification },
     vehicle: { make: j.vehicle?.make ?? '', model: j.vehicle?.model ?? '', colour: j.vehicle?.colour ?? '', bodyType: j.vehicle?.bodyType ?? 'sedan', registrationSummary: j.vehicle?.registrationSummary ?? '', photoUrl: publicFileUrl('vehicle-photos', j.vehicle?.photoPath) },
   }
 }
@@ -190,59 +202,45 @@ const nextMonthFirst = () => {
   return new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().slice(0, 10)
 }
 
+export function clearLiveCaches() { matchCache.clear(); try { for(const k of Object.keys(localStorage)) if(k.startsWith(COMMUTE_KEY)||k==='lifty.state.v1') localStorage.removeItem(k) } catch {} }
 // ---------- implementation ----------
 export const liveApi: LiftyApi = {
-  async signUp({ fullName, phone, password, role }) {
-    const e164 = toE164(phone)
-    try {
-      localStorage.setItem(PENDING_KEY, JSON.stringify({ fullName, role }))
-    } catch {
-      /* ignore */
-    }
-    const { error } = await sb().auth.signUp({ phone: e164, password, options: { data: { full_name: fullName, role } } })
-    if (error && /already registered|already exists/i.test(error.message)) {
-      const r = await sb().auth.signInWithOtp({ phone: e164 })
-      if (r.error) fail(r.error)
-    } else if (error) fail(error)
-    return { resendInSeconds: 30 }
+  ...pilotMethods,
+  async signUp({fullName,phone,role}) {
+    const e164=toE164(phone)
+    const {error}=await sb().auth.signInWithOtp({phone:e164,options:{channel:'sms',data:{full_name:fullName,role}}})
+    if(error) fail(error)
+    sessionStorage.setItem(PENDING_KEY,JSON.stringify({fullName,role,phone:e164}))
+    return {resendInSeconds:30}
   },
   async sendOtp(phone) {
-    const { error } = await sb().auth.signInWithOtp({ phone: toE164(phone) })
-    if (error) fail(error)
-    return { resendInSeconds: 30 }
+    const {error}=await sb().auth.signInWithOtp({phone:toE164(phone),options:{channel:'sms',shouldCreateUser:false}})
+    if(error)fail(error)
+    return {resendInSeconds:30}
   },
-  async verifyOtp(phone, code) {
-    if (!/^\d{6}$/.test(code)) throw new ApiError('Enter the 6-digit code we sent you.', 'invalid')
-    const { data, error } = await sb().auth.verifyOtp({ phone: toE164(phone), token: code, type: 'sms' })
-    if (error) throw new ApiError("That code isn't right or has expired. Check it and try again.", 'invalid')
-    const user = data.user
-    if (!user) throw new ApiError('Could not sign you in.', 'auth')
-    // create the profile the first time
-    const { data: existing } = await sb().from('profiles').select('id').eq('id', user.id).maybeSingle()
-    if (!existing) {
-      let pending: { fullName?: string; role?: string } = {}
-      try {
-        pending = JSON.parse(localStorage.getItem(PENDING_KEY) || '{}')
-      } catch {
-        /* ignore */
-      }
-      const fullName = (pending.fullName ?? (user.user_metadata?.full_name as string) ?? 'Lifty user').trim()
-      const [first, ...rest] = fullName.split(/\s+/)
-      const last = rest.join(' ')
-      const role = pending.role ?? (user.user_metadata?.role as string) ?? 'passenger'
-      const p = await sb().from('profiles').insert({ id: user.id, role, first_name: first, last_initial: last.charAt(0).toUpperCase() })
-      if (p.error) fail(p.error)
-      await sb().from('profile_private').upsert({ id: user.id, last_name: last, phone: toE164(phone), terms_accepted_at: new Date().toISOString() })
+  async verifyOtp(phone,code) {
+    const e164=toE164(phone)
+    const {data,error}=await sb().auth.verifyOtp({phone:e164,token:code,type:'sms'})
+    if(error)fail(error)
+    if(!data.user)throw new ApiError('Could not sign in','auth')
+    const {data:existing,error:profileError}=await sb().from('profiles').select('id').eq('id',data.user.id).maybeSingle()
+    if(profileError)fail(profileError)
+    if(!existing){
+      let pending={fullName:'',role:'passenger',phone:''}
+      try {pending=JSON.parse(sessionStorage.getItem(PENDING_KEY)||'{}')} catch {}
+      const meta=data.user.user_metadata
+      await pilotRpc('bootstrap_account',{p_full_name:pending.phone===e164?pending.fullName:meta.full_name,p_role:pending.phone===e164?pending.role:meta.role})
     }
-    const { data: prof } = await sb().from('profiles').select('role, first_name, last_initial').eq('id', user.id).single()
-    const [{ count: legs }, { count: commutes }] = await Promise.all([
-      sb().from('driver_legs').select('id', { count: 'exact', head: true }).eq('driver_id', user.id),
-      sb().from('passenger_commutes').select('id', { count: 'exact', head: true }).eq('passenger_id', user.id),
-    ])
-    return { role: prof?.role ?? 'passenger', firstName: prof?.first_name ?? '', lastInitial: prof?.last_initial ?? '', hasSetup: (legs ?? 0) + (commutes ?? 0) > 0 }
+    sessionStorage.removeItem(PENDING_KEY)
+    return await liveApi.getAccountSnapshot()
   },
   async signOut() {
-    await sb().auth.signOut()
+    // Remove this device's destination while the current session can authorize it.
+    let token:string|null=null
+    try{token=localStorage.getItem('lifty.push.device')}catch{}
+    if(token&&currentUserId)await sb().from('push_tokens').delete().eq('user_id',currentUserId).eq('token',token)
+    clearLiveCaches();sessionStorage.removeItem(PENDING_KEY)
+    const {error}=await sb().auth.signOut();if(error)fail(error)
     try {
       localStorage.removeItem(COMMUTE_KEY)
       localStorage.removeItem(PENDING_KEY)
@@ -253,6 +251,8 @@ export const liveApi: LiftyApi = {
 
   async savePassengerCommute(plan: CommutePlan) {
     const me = await uid()
+    const origin=plan.direction==='to_home'?plan.destination:plan.origin
+    const destination=plan.direction==='to_home'?plan.origin:plan.destination
     const [h, m] = plan.arriveBy.split(':').map(Number)
     const [hs, ms] = plan.arriveWindowStart.split(':').map(Number)
     const windowMin = Math.max(0, h * 60 + m - (hs * 60 + ms))
@@ -266,14 +266,15 @@ export const liveApi: LiftyApi = {
         {
           passenger_id: me,
           direction: plan.direction,
-          origin_label: plan.origin.label,
-          origin: pt(plan.origin.location.lng, plan.origin.location.lat),
-          destination_label: plan.destination.label,
-          destination: pt(plan.destination.location.lng, plan.destination.location.lat),
+          origin_label: origin.label,
+          origin: pt(origin.location.lng, origin.location.lat),
+          destination_label: destination.label,
+          destination: pt(destination.location.lng, destination.location.lat),
           days: plan.scheduleMode === 'dates' ? [...new Set(dates.map((d) => (new Date(`${d}T12:00:00`).getDay() + 6) % 7))].sort() : plan.days,
           arrive_by: plan.direction === 'to_home' ? plan.returnTime : plan.arriveBy,
           window_min: windowMin || 15,
           max_walk_m: plan.maxWalkMeters,
+          skip_holidays:plan.skipHolidays,
           start_date: plan.scheduleMode === 'dates' ? (dates[0] ?? plan.startDate) : plan.startDate,
           end_date: plan.scheduleMode === 'dates' ? null : plan.endDate ?? null,
           // holidays are removed client-side so the server only sees real commuting days
@@ -285,24 +286,12 @@ export const liveApi: LiftyApi = {
       .single()
     if (error) fail(error)
     setCommuteId(plan.direction, data.id)
-    // weekly commuters skip SA public holidays: record them as days off for the next year
-    if (plan.scheduleMode === 'weekly' && plan.skipHolidays) {
-      const until = isoDate(365)
-      const upcoming: { date: string; note: string }[] = []
-      for (const y of [Number(today.slice(0, 4)), Number(today.slice(0, 4)) + 1]) {
-        for (const [date, note] of holidaysFor(y)) if (date >= today && date <= until) upcoming.push({ date, note })
-      }
-      const { data: existing } = await sb().from('schedule_exceptions').select('date').eq('user_id', me).eq('kind', 'holiday')
-      const have = new Set((existing ?? []).map((e: { date: string }) => e.date))
-      const rows = upcoming.filter((u) => !have.has(u.date)).map((u) => ({ user_id: me, kind: 'holiday', date: u.date, note: u.note }))
-      if (rows.length) await sb().from('schedule_exceptions').insert(rows)
-    }
     return data.id as string
   },
   async saveDriverSetup(setup) {
     const me = await uid()
     const reg = setup.vehicle.registration.trim().toUpperCase()
-    const summary = reg.length > 4 ? `${reg.slice(0, 2)} ••• ${reg.replace(/\s/g, '').slice(-3)}` : reg
+    const summary = reg.includes('•') ? reg : reg.length > 4 ? `${reg.slice(0, 2)} ••• ${reg.replace(/\s/g, '').slice(-3)}` : reg
     const v = await sb().from('vehicles').upsert(
       {
         driver_id: me,
@@ -377,16 +366,36 @@ export const liveApi: LiftyApi = {
 
   async findMatches(plan) {
     const commuteId = await liveApi.savePassengerCommute(plan)
-    const { data, error } = await sb().rpc('find_matches', { p_commute: commuteId })
-    if (error) fail(error)
-    const matches = (data as J[]).map(toMatch)
+    let matches: Match[]
+    try {
+      // road-routed matching on the server: drivers' full routes never reach the phone
+      const { data, error } = await sb().functions.invoke('find-matches', { body: { commuteId, mapboxToken: env.mapboxToken } })
+      if (error || !Array.isArray(data?.matches)) throw error ?? new Error('find-matches returned no result')
+      matches = (data.matches as J[]).map(toMatch)
+      setLastMatchSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [])
+    } catch (e) {
+      const status=(e as {context?:Response}).context?.status
+      if(status&&![503,502,504].includes(status))throw new ApiError(status===429?'Please wait before searching again.':'Could not load matches. Sign in again or retry.','server')
+      // routing unavailable → the database's straight-line estimate, labelled as such on every match
+      console.warn('Road-routed matching unavailable, using estimates', e)
+      const { data, error } = await sb().rpc('get_estimated_match_quotes', { p_commute: commuteId })
+      if (error) fail(error)
+      matches = (data as J[]).map(toMatch)
+      setLastMatchSuggestions([])
+    }
     await nameOnRoutePickups(matches)
     matches.forEach((m) => matchCache.set(m.id, { ...m, commuteId }))
     return matches
   },
   async getMatch(id) {
+    const {data:snapshots,error:snapshotError}=await sb().from('join_requests').select('match_snapshot').eq('leg_id',id).in('status',['pending','accepted']).order('created_at',{ascending:false}).limit(1)
+    if(snapshotError)fail(snapshotError)
+    if(snapshots?.[0]?.match_snapshot){const m=toMatch(snapshots[0].match_snapshot);m.driver.verification=await pilotRpc('driver_verification',{p_user:m.driver.id});return m}
     const hit = matchCache.get(id)
     if (hit) return hit
+    const {data:stored,error:commuteError}=await sb().from('passenger_commutes').select('id,direction').eq('passenger_id',await uid())
+    if(commuteError)fail(commuteError)
+    for(const c of stored??[])setCommuteId(c.direction,c.id)
     for (const commuteId of Object.values(commuteIds())) {
       const { data, error } = await sb().rpc('get_match', { p_commute: commuteId, p_leg: id })
       if (error) fail(error)
@@ -400,7 +409,7 @@ export const liveApi: LiftyApi = {
     throw new ApiError('This lift club is no longer a match for your commute.', 'not-found')
   },
   async getDriver(id) {
-    const { data, error } = await sb().from('profiles').select('*, vehicles(*)').eq('id', id).maybeSingle()
+    const { data, error } = await sb().from('profiles').select('id,role,first_name,last_initial,avatar_path,rating,rating_count,identity_status,completed_arrangements,created_at,about,reliability,vehicles(*)').eq('id', id).maybeSingle()
     if (error) fail(error)
     if (!data) throw new ApiError('We couldn’t find that driver.', 'not-found')
     const v = Array.isArray(data.vehicles) ? data.vehicles[0] : data.vehicles
@@ -408,6 +417,7 @@ export const liveApi: LiftyApi = {
       { id: data.id, firstName: data.first_name, lastInitial: data.last_initial, avatarPath: data.avatar_path, rating: data.rating, ratingCount: data.rating_count, identityStatus: data.identity_status, completedArrangements: data.completed_arrangements, memberSince: data.created_at?.slice(0, 10), about: data.about, reliability: data.reliability },
       v && { make: v.make, model: v.model, colour: v.colour, year: v.year, bodyType: v.body_type, registrationSummary: v.registration_summary, seatsTotal: v.seats_total, photoPath: v.photo_path, status: v.status },
     )
+    driver.verification=await pilotRpc('driver_verification',{p_user:id})
     const r = await sb()
       .from('ratings')
       .select('id, stars, tags, comment, created_at, rater:profiles!ratings_rater_id_fkey(first_name, last_initial)')
@@ -421,7 +431,8 @@ export const liveApi: LiftyApi = {
     const m = matchCache.get(matchId)
     const commuteId = m?.commuteId ?? Object.values(commuteIds())[0]
     if (!commuteId) throw new ApiError('Plan your commute first.', 'invalid')
-    const { data, error } = await sb().rpc('request_to_join', { p_commute: commuteId, p_leg: matchId })
+    if(!m?.quoteId)throw new ApiError('Refresh your matches before requesting this offer.','invalid')
+    const { data, error } = await sb().rpc('request_to_join_quote', { p_commute: commuteId, p_leg: matchId,p_quote:m.quoteId })
     if (error) fail(error)
     return { id: data as string, matchId, status: 'pending', createdAt: new Date().toISOString(), startDate: isoDate(7) }
   },
@@ -461,6 +472,7 @@ export const liveApi: LiftyApi = {
         nextContributionDate: nextMonthFirst(),
         paymentStatus: (c.paymentStatus ?? 'upcoming') as PaymentStatus,
         paused: !!c.paused,
+        schedule:c.schedule,
       }
     })
     const asDriver: DriverLegSummary[] = (data.asDriver as J[]).map((l) => ({
@@ -518,9 +530,10 @@ export const liveApi: LiftyApi = {
     if (error) fail(error)
   },
   async addException(e) {
-    const me = await uid()
-    const { error } = await sb().from('schedule_exceptions').insert({ user_id: me, leg_id: e.legId ?? null, kind: e.kind, date: e.date === 'ongoing' ? null : e.date, note: e.note ?? null })
-    if (error) fail(error)
+    const me=await uid()
+    const {data,error}=await sb().from('schedule_exceptions').insert({user_id:me,leg_id:e.legId??null,kind:e.kind,date:e.date==='ongoing'?null:e.date,note:e.note??null}).select('id').single()
+    if(error)fail(error)
+    return {...e,id:data.id}
   },
 
   async getCurrentInstance() {
@@ -529,11 +542,13 @@ export const liveApi: LiftyApi = {
     return data ? toInstance(data) : null
   },
 
-  async listMessages(clubId) {
+  async listMessages(clubId,before) {
     const me = await uid()
-    const { data, error } = await sb().from('messages').select('id, sender_id, body, created_at, sender:profiles(first_name)').eq('leg_id', clubId).order('created_at').limit(200)
+    let query=sb().from('messages').select('id, sender_id, body, created_at, sender:profiles(first_name)').eq('leg_id',clubId).order('created_at',{ascending:false}).limit(100)
+    if(before)query=query.lt('created_at',new Date(before).toISOString())
+    const {data,error}=await query
     if (error) fail(error)
-    return (data as J[]).map((m) => ({ id: m.id, senderId: m.sender_id, senderName: m.sender?.first_name ?? '', body: m.body, createdAt: new Date(m.created_at).getTime(), mine: m.sender_id === me }))
+    return (data as J[]).reverse().map((m) => ({ id: m.id, senderId: m.sender_id, senderName: m.sender?.first_name ?? '', body: m.body, createdAt: new Date(m.created_at).getTime(), mine: m.sender_id === me }))
   },
   async sendMessage(clubId, body) {
     const me = await uid()
@@ -541,16 +556,19 @@ export const liveApi: LiftyApi = {
     if (error) fail(error)
   },
   subscribeMessages(clubId, onMessage) {
-    let me = ''
+    let me = currentUserId??''
+    let active=true
     void uid().then((id) => (me = id)).catch(() => {})
     const ch = sb()
       .channel(`messages:${clubId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `leg_id=eq.${clubId}` }, (p) => {
         const m = p.new as J
+        if(!active)return
         onMessage({ id: m.id, senderId: m.sender_id, senderName: '', body: m.body, createdAt: new Date(m.created_at).getTime(), mine: m.sender_id === me })
+        void sb().from('profiles').select('first_name').eq('id',m.sender_id).maybeSingle().then(({data})=>{if(active&&data)onMessage({id:m.id,senderId:m.sender_id,senderName:data.first_name,body:m.body,createdAt:new Date(m.created_at).getTime(),mine:m.sender_id===me})})
       })
-      .subscribe()
-    return () => void sb().removeChannel(ch)
+      .subscribe(status=>{if(status==='SUBSCRIBED')void liveApi.listMessages(clubId).then(ms=>{if(active)ms.forEach(onMessage)}).catch(()=>{})})
+    return () => {active=false;void sb().removeChannel(ch)}
   },
   async listNotifications(): Promise<AppNotification[]> {
     const { data, error } = await sb().from('notifications').select('*').order('created_at', { ascending: false }).limit(50)
@@ -559,15 +577,19 @@ export const liveApi: LiftyApi = {
   },
   async markNotificationsRead() {
     const me = await uid()
-    await sb().from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', me).is('read_at', null)
+    const {error}=await sb().from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', me).is('read_at', null)
+    if(error)fail(error)
   },
   subscribeNotifications(onNew) {
+    let active=true
     let ch: ReturnType<ReturnType<typeof sb>['channel']> | null = null
     void uid()
       .then((me) => {
+        if(!active)return
         ch = sb()
           .channel(`notifications:${me}`)
           .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${me}` }, (p) => {
+            if(!active)return
             const n = p.new as J
             onNew({ id: n.id, kind: n.kind, title: n.title, body: n.body, link: n.link ?? undefined, read: false, createdAt: Date.now() })
           })
@@ -575,18 +597,16 @@ export const liveApi: LiftyApi = {
       })
       .catch(() => {})
     return () => {
+      active=false
       if (ch) void sb().removeChannel(ch)
     }
   },
-  async savePushToken(token, platform) {
-    const me = await uid()
-    await sb().from('push_tokens').upsert({ user_id: me, token, platform, updated_at: new Date().toISOString() })
-  },
+  async savePushToken(token,platform){await pilotRpc('register_push_destination',{p_token:token,p_platform:platform})},
 
-  async submitRating({ driverId, stars, tags, comment, legId }) {
+  async submitRating({ driverId, stars, tags, comment, legId, instanceId }) {
     const me = await uid()
-    if (!legId) throw new ApiError('Rating needs a lift club.', 'invalid')
-    const { error } = await sb().from('ratings').insert({ rater_id: me, ratee_id: driverId, leg_id: legId, stars, tags, comment: comment || null })
+    if (!legId||!instanceId) throw new ApiError('Choose a completed commute to rate.', 'invalid')
+    const { error } = await sb().from('ratings').insert({ rater_id: me, ratee_id: driverId, leg_id: legId, instance_id:instanceId, stars, tags, comment: comment || null })
     if (error) fail(error)
   },
   async submitReport({ kind, body, subjectId }) {
@@ -615,11 +635,7 @@ export const liveApi: LiftyApi = {
     if (error) return false
     return !!data
   },
-  async listPendingDocuments() {
-    const { data, error } = await sb().from('verification_documents').select('id, user_id, kind, storage_path, detail, created_at, profiles(first_name, last_initial)').eq('status', 'pending').order('created_at')
-    if (error) fail(error)
-    return (data as J[]).map((d) => ({ id: d.id, userId: d.user_id, userName: `${d.profiles?.first_name ?? ''} ${d.profiles?.last_initial ?? ''}.`, kind: d.kind, storagePath: d.storage_path, detail: d.detail ?? undefined, createdAt: new Date(d.created_at).getTime() }))
-  },
+  async listPendingDocuments(){return await pilotRpc('list_pending_documents')},
   async documentUrl(path) {
     if (!path) return null
     const { data } = await sb().storage.from('kyc').createSignedUrl(path, 300)
@@ -629,11 +645,7 @@ export const liveApi: LiftyApi = {
     const { error } = await sb().rpc('review_document', { p_doc: id, p_approve: approve, p_note: note ?? null })
     if (error) fail(error)
   },
-  async listReports() {
-    const { data, error } = await sb().from('reports').select('id, kind, body, status, created_at').order('created_at', { ascending: false }).limit(100)
-    if (error) fail(error)
-    return (data as J[]).map((r) => ({ id: r.id, kind: r.kind, body: r.body, status: r.status, createdAt: new Date(r.created_at).getTime() }))
-  },
+  async listReports(){return await pilotRpc('list_safety_reports')},
   async updateReport(id, status) {
     const { error } = await sb().rpc('admin_update_report', { p_report: id, p_status: status })
     if (error) fail(error)
@@ -646,7 +658,7 @@ export function instanceToMatch(inst: CommuteInstance, myId?: string): Match & {
   const pickup = rider?.pickup ?? inst.destination
   return {
     id: inst.legId,
-    direction: 'to_work',
+    direction: inst.direction,
     liveInstance: inst,
     driver: {
       id: inst.driver.id,
@@ -655,7 +667,7 @@ export function instanceToMatch(inst: CommuteInstance, myId?: string): Match & {
       avatarHue: inst.driver.avatarHue,
       rating: inst.driver.rating,
       ratingCount: inst.driver.ratingCount,
-      verification: { identity: 'verified', vehicle: 'verified', licence: 'verified' },
+      verification: inst.driver.verification,
       vehicle: { ...inst.vehicle, year: 0, seatsTotal: 0 },
       seatsAvailable: 0,
       memberSince: '',

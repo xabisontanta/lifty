@@ -1,8 +1,14 @@
-import type { ClubMember, JoinRequest, LiftClub, Match, ScheduleException, Weekday } from '@/domain/types'
-import { formatDate, isoDate } from './format'
+import type { AgreedSchedule, ClubMember, CommutePlan, JoinRequest, LiftClub, Match, ScheduleException, Weekday } from '@/domain/types'
+import { isoDate } from './format'
+import { holidayName } from './holidays'
 
-/** JS Date.getDay() is Sun=0; Lifty weekdays are Mon=0. */
-const toLifty = (d: Date): Weekday => ((d.getDay() + 6) % 7) as Weekday
+const DAY_MS = 86_400_000
+// South Africa has no daylight-saving changes. Calendar dates and pickup times
+// belong to the club's time zone, including when a member travels abroad.
+const saDate = (date: Date) => new Date(date.getTime() + 2 * 60 * 60 * 1000).toISOString().slice(0, 10)
+const toLifty = (iso: string): Weekday => ((new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7) as Weekday
+const addDays = (iso: string, count: number) => new Date(new Date(`${iso}T12:00:00Z`).getTime() + count * DAY_MS).toISOString().slice(0, 10)
+const calendarLabel = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-ZA', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Africa/Johannesburg' })
 
 export interface NextCommute {
   date: string // ISO
@@ -12,33 +18,47 @@ export interface NextCommute {
 }
 
 /** Next scheduled commute, honouring "not commuting" exceptions. */
-export function nextCommute(days: Weekday[], time: string, exceptions: ScheduleException[], paused = false): NextCommute | null {
-  if (days.length === 0) return null
-  const now = new Date()
-  for (let i = 0; i < 21; i++) {
-    const d = new Date(now)
-    d.setDate(now.getDate() + i)
-    if (!days.includes(toLifty(d))) continue
-    const iso = d.toISOString().slice(0, 10)
-    const [h, m] = time.split(':').map(Number)
-    if (i === 0 && (now.getHours() > h || (now.getHours() === h && now.getMinutes() > m + 30))) continue
-    const skipped = paused || exceptions.some((e) => e.date === iso || e.date === 'ongoing')
+export function nextCommute(
+  days: Weekday[], time: string, exceptions: ScheduleException[], paused = false,
+  options: { schedule?: AgreedSchedule; legId?: string; startDate?: string; now?: Date } = {},
+): NextCommute | null {
+  const now = options.now ?? new Date()
+  const today = saDate(now)
+  const schedule = options.schedule
+  const startDate = schedule?.startDate ?? options.startDate ?? today
+  const selectedDays = schedule?.days ?? days
+  if (!/^\d{2}:\d{2}/.test(time) || (!selectedDays.length && schedule?.scheduleMode !== 'dates')) return null
+  const applicable = exceptions.filter(e => !e.legId || !options.legId || e.legId === options.legId)
+  const firstDate = startDate > today ? startDate : today
+  const candidates = schedule?.scheduleMode === 'dates'
+    ? [...new Set(schedule.dates)].filter(date => date >= firstDate).sort()
+    : Array.from({ length: 366 }, (_, offset) => addDays(firstDate, offset))
+  for (const iso of candidates) {
+    if (schedule?.endDate && iso > schedule.endDate) break
+    if (schedule?.scheduleMode !== 'dates' && !selectedDays.includes(toLifty(iso))) continue
+    if (schedule?.skipHolidays && holidayName(iso)) continue
+    if (new Date(`${iso}T${time.slice(0, 5)}:00+02:00`).getTime() + 30 * 60_000 < now.getTime()) continue
+    const skipped = paused || applicable.some(e => e.kind !== 'pickup-change' && (e.date === iso || e.date === 'ongoing'))
     if (skipped && !paused) continue
+    const isToday = iso === today
     return {
       date: iso,
-      isToday: i === 0,
+      isToday,
       skipped,
-      label: `${i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : formatDate(iso).replace(/,? \d{4}$/, '')} · ${time}`,
+      label: `${isToday ? 'Today' : iso === addDays(today, 1) ? 'Tomorrow' : calendarLabel(iso)} · ${time}`,
     }
   }
   return null
 }
 
-export function buildClub(match: Match, req: JoinRequest, me: { firstName: string; lastInitial: string; avatarHue: number }): LiftClub {
+export function nextClubCommute(club: LiftClub, exceptions: ScheduleException[], now?: Date): NextCommute | null {
+  return nextCommute(club.days, club.pickupTime, exceptions, club.paused, { schedule: club.schedule, legId: club.matchId, startDate: club.startDate, now })
+}
+
+export function buildClub(match: Match, req: JoinRequest, me: { id?: string; firstName: string; lastInitial: string; avatarHue: number }, plan?: CommutePlan): LiftClub {
   const members: ClubMember[] = [
     { id: match.driver.id, firstName: match.driver.firstName, lastInitial: match.driver.lastInitial, avatarHue: match.driver.avatarHue, role: 'driver' },
-    { id: 'me', firstName: me.firstName, lastInitial: me.lastInitial, avatarHue: me.avatarHue, role: 'passenger', paymentStatus: 'due' },
-    { id: 'pax-other', firstName: 'Lindiwe', lastInitial: 'S', avatarHue: 300, role: 'passenger', paymentStatus: 'paid' },
+    { id: me.id ?? 'demo-passenger', firstName: me.firstName, lastInitial: me.lastInitial, avatarHue: me.avatarHue, role: 'passenger', paymentStatus: 'due' },
   ]
   return {
     id: `club-${match.id}`,
@@ -48,7 +68,7 @@ export function buildClub(match: Match, req: JoinRequest, me: { firstName: strin
     members,
     pickup: match.pickup,
     destination: match.destination,
-    days: match.days,
+    days: match.coveredDays ?? match.days,
     pickupTime: match.pickupEta,
     startDate: req.startDate,
     seatsTotal: match.driver.vehicle.seatsTotal,
@@ -57,5 +77,15 @@ export function buildClub(match: Match, req: JoinRequest, me: { firstName: strin
     nextContributionDate: isoDate(21),
     paymentStatus: 'due',
     paused: false,
+    schedule: plan ? {
+      scheduleMode: plan.scheduleMode === 'dates' ? 'dates' : 'weekly',
+      days: [...(match.coveredDays ?? match.days.filter(day => plan.days.includes(day)))],
+      dates: [...(match.coveredDates ?? plan.dates.filter(date => match.days.includes(toLifty(date))))],
+      startDate: req.startDate,
+      endDate: plan.endDate,
+      skipHolidays: plan.skipHolidays,
+      monthlyContribution: match.monthlyContribution.total,
+      perDayContribution: match.perDayContribution,
+    } : undefined,
   }
 }

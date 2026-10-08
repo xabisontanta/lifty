@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0f2d4a">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Lifty · Phone review</title>
+  <link rel="icon" href="/icons/lifty-192.png">
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f3f7f8;color:#102d48;font:16px/1.5 system-ui,-apple-system,sans-serif}
+    main{max-width:1120px;margin:auto;padding:48px 28px;display:flex;align-items:center;justify-content:center;gap:80px}
+    .info{max-width:410px}.brand{display:flex;gap:12px;align-items:center;font-weight:750;font-size:24px}.brand img{border-radius:14px}
+    .eyebrow{color:#16866d;text-transform:uppercase;letter-spacing:.12em;font-size:12px;font-weight:750;margin-top:36px}
+    h1{font-size:40px;line-height:1.15;margin:12px 0 18px;letter-spacing:-.04em}p{color:#526578}a{color:#08735d}
+    .qr{display:block;width:200px;height:200px;margin:24px 0 8px;border:1px solid #d9e3e6;border-radius:12px}
+    .url{overflow-wrap:anywhere;font-size:14px}.button{display:inline-flex;background:#00a57f;color:#fff;text-decoration:none;border-radius:12px;padding:13px 22px;font-weight:650;margin-top:24px}
+    .steps{font-size:14px;padding-left:22px;color:#526578}.note{font-size:13px;border-top:1px solid #d9e3e6;margin-top:26px;padding-top:18px}
+    .phone{width:410px;border:9px solid #102d48;border-radius:42px;padding:0;overflow:hidden;background:#fff;box-shadow:0 26px 70px #102d4822;flex-shrink:0;height:852px}
+    iframe{display:block;border:0;width:100%;height:100%;background:#fff}
+    @media(max-width:800px){main{padding:32px 22px;min-height:100vh}.phone{display:none}.info{max-width:460px}h1{font-size:36px}.qr{width:176px;height:176px}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+  </style>
+</head>
+<body>
+  <main>
+    <section class="info" aria-labelledby="title">
+      <div class="brand"><img src="/icons/lifty-192.png" width="44" height="44" alt="">Lifty</div>
+      <p class="eyebrow">Phone review</p>
+      <h1 id="title">Your daily commute,<br>in your pocket.</h1>
+      <p>Scan with your phone camera to open Lifty in your browser. Explore the passenger and driver journeys on your own screen.</p>
+      <img class="qr" src="/review-qr.png" width="200" height="200" alt="QR code to open Lifty on your phone">
+      <a class="url" id="phone-link" href="https://lifty-ten.vercel.app/" rel="noreferrer">lifty-ten.vercel.app</a><br>
+      <a class="button" href="/">Open Lifty</a>
+      <ol class="steps">
+        <li>Open the link in Chrome on Android or Safari on iPhone.</li>
+        <li>Use the browser menu to add Lifty to your Home Screen.</li>
+        <li>Allow location when a commute asks for it.</li>
+      </ol>
+      <p class="note">This QR opens the browser app. Lifty uses Capacitor for Android, so it does not open in Expo Go. Background location and native push require the Android build. The browser app needs a connection and shares location while open.</p>
+    </section>
+    <section class="phone" aria-label="Interactive phone preview"><iframe title="Lifty app in a phone frame" allow="geolocation; camera" referrerpolicy="same-origin"></iframe></section>
+  </main>
+  <script>
+    // Same-origin preview: no sessions or private API data are copied to another host.
+    if (matchMedia('(min-width:801px)').matches) document.querySelector('iframe').src = '/';
+    fetch('/review-qr.json', { credentials: 'omit' }).then(r => r.ok ? r.json() : null).then(config => {
+      if (!config) return;
+      const url = new URL(config.url);
+      if (url.protocol !== 'https:' || url.username || url.password) return;
+      const link = document.getElementById('phone-link');
+      link.href = url.href;
+      link.textContent = url.hostname + (url.pathname === '/' ? '' : url.pathname);
+    }).catch(() => {});
+  </script>
+</body>
+</html>

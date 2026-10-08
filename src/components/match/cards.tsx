@@ -5,7 +5,6 @@ import { formatDays, formatDistance, rand, walkLabel } from '@/lib/format'
 import { Icon, type IconName } from '@/components/ui/Icon'
 import { Avatar, Card, Rating, StatusBadge, VerificationBadge } from '@/components/ui/kit'
 import { AvatarStack } from '@/components/ui/extras'
-import { AvatarStack } from '@/components/ui/extras'
 
 /* ---------- Metric tile — the four numbers that explain a match ---------- */
 
@@ -35,6 +34,17 @@ export function DayChips({ days }: { days: Weekday[] }) {
 
 /* ---------- MatchCard (design system §07 Lift Club / Match Card) ---------- */
 
+/** "Drives 3 of your 5 dates — not Thu 15 Oct…" — readable, never raw ISO dates. */
+export function partialLine(m: Match): string {
+  const short = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString('en-ZA', { weekday: 'short', day: 'numeric', month: 'short' })
+  const miss = m.uncoveredDates ?? []
+  if (miss.length) {
+    const covered = m.coveredDates?.length ?? 0
+    return `Drives ${covered} of your ${covered + miss.length} dates — not ${miss.slice(0, 3).map(short).join(', ')}${miss.length > 3 ? ` +${miss.length - 3} more` : ''}`
+  }
+  return `Doesn’t drive ${formatDays(m.uncoveredDays ?? [])}`
+}
+
 export function MatchCard({ match, rank, onView }: { match: Match; rank?: number; onView: () => void }) {
   const d = match.driver
   return (
@@ -44,7 +54,7 @@ export function MatchCard({ match, rank, onView }: { match: Match; rank?: number
         <strong className="small">{match.pickup.label} → {match.destination.label}</strong>
         <StatusBadge tone="teal" icon="seat">{match.availableSeats} seat{match.availableSeats === 1 ? '' : 's'}</StatusBadge>
       </div>
-      <button type="button" className="compact-match" style={{ background: 'none', border: 0, padding: 0, marginTop: 12 }} onClick={onView} aria-label={}>
+      <button type="button" className="compact-match" style={{ background: 'none', border: 0, padding: 0, marginTop: 12 }} onClick={onView} aria-label={`View ${d.firstName} lift club`}>
         <Avatar first={d.firstName} last={d.lastInitial} hue={d.avatarHue} size={52} src={d.avatarUrl} />
         <span className="grow">
           <span className="row-flex between">
@@ -56,14 +66,18 @@ export function MatchCard({ match, rank, onView }: { match: Match; rank?: number
           <span className="match-chips">
             <StatusBadge tone="teal" icon="route">{match.routeOverlap}% route overlap</StatusBadge>
             {d.verification.identity === 'verified' && <StatusBadge tone="success" icon="shieldCheck">Verified</StatusBadge>}
+            {match.partial && <StatusBadge tone="warning" icon="calendar">Partial schedule</StatusBadge>}
           </span>
         </span>
       </button>
 
+      {match.partial && <p className="small" role="status" style={{ marginTop: 8, color: '#92600a' }}>{partialLine(match)}</p>}
       <div className="metrics">
-        <MetricTile icon="walk" label="Walk to pickup" value={} sub={formatDistance(match.walkingDistanceM)} tone="blue" />
-        <MetricTile icon="navigation" label="Driver deviation" value={} tone="amber" />
-        <MetricTile icon="calendar" label={formatDays(match.days)} value={match.pickupEta} sub="pickup" />
+        {match.walkingDistanceM === 0
+          ? <MetricTile icon="pin" label="Pickup" value="Door" sub="no walking" tone="blue" />
+          : <MetricTile icon="walk" label="Walk to pickup" value={`${match.walkingMinutes} min`} sub={formatDistance(match.walkingDistanceM)} tone="blue" />}
+        <MetricTile icon="navigation" label="Driver deviation" value={`${match.driverDeviationMinutes} min`} tone="amber" />
+        <MetricTile icon="clock" label="Arrives" value={match.arrivalEta} sub={`pickup ${match.pickupEta}`} />
       </div>
 
       <div className="row-flex between wrap" style={{ marginTop: 14 }}>
@@ -71,15 +85,21 @@ export function MatchCard({ match, rank, onView }: { match: Match; rank?: number
           <AvatarStack people={match.members} />
           <span className="small muted">{match.members.length ? 'already in this club' : ''}</span>
         </div>
-        <div className="right">
-          <strong className="price">{rand(match.monthlyContribution.total)}</strong>
-          <span className="muted small">/month</span>
-        </div>
+        {match.pricing === 'per_day' ? (
+          <div className="right">
+            <strong className="price">{rand(match.perDayContribution ?? 0)}</strong>
+            <span className="muted small">/day</span>
+            <p className="small muted">{match.bookedDays} day{match.bookedDays === 1 ? '' : 's'} = {rand(match.monthlyContribution.total)}</p>
+          </div>
+        ) : (
+          <div className="right">
+            <strong className="price">{rand(match.monthlyContribution.total)}</strong>
+            <span className="muted small">/month</span>
+          </div>
+        )}
       </div>
 
-      <button type="button" className="btn btn-primary btn-block" style={{ marginTop: 14 }} onClick={onView} aria-label={[?1049h[22;0;0t[>4;2m[?1h=[?2004h[?1004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H"match" [New][2;1H[94m~                                                                               [3;1H~                                                                               [4;1H~                                                                               [5;1H~                                                                               [6;1H~                                                                               [7;1H~                                                                               [8;1H~                                                                               [9;1H~                                                                               [10;1H~                                                                               [11;1H~                                                                               [12;1H~                                                                               [13;1H~                                                                               [14;1H~                                                                               [15;1H~                                                                               [16;1H~                                                                               [17;1H~                                                                               [18;1H~                                                                               [19;1H~                                                                               [20;1H~                                                                               [21;1H~                                                                               [22;1H~                                                                               [m[23;1H[1m[7mmatch[RO] [unix] (01:59 01/01/1970)                                    0,0-1 All[?25h[1;1H[?4m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[?2004l[>4;m[?2004h[>4;2m[24;1H[?2004l[>4;m[m[?1004l[?2004l[?1l>[?1049l[23;0;0t[>4;mVim: Error reading input, exiting...
-Vim: Finished.
-[24;1H[23;2t[23;1t4 files to edit}>
+      <button type="button" className="btn btn-primary btn-block" style={{ marginTop: 14 }} onClick={onView} aria-label={`View match with ${d.firstName}`}>
         <span>View Match</span>
       </button>
     </Card>

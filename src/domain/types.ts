@@ -14,6 +14,7 @@ export interface PublicVerification {
   identity: VerificationStatus
   vehicle: VerificationStatus
   licence: VerificationStatus
+  insurance?: VerificationStatus
 }
 
 export interface Vehicle {
@@ -72,10 +73,16 @@ export interface Review {
 export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6 // Mon..Sun
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
 
+export type LocationSource = 'manual' | 'autocomplete' | 'current_location' | 'map_pin' | 'saved_location'
+
+/** Structured location — never just a display string. */
 export interface Place {
-  label: string
+  label: string // formattedAddress
   area: string
   location: LatLng
+  placeId?: string
+  /** how this location was chosen */
+  source?: LocationSource
 }
 
 export type LegDirection = 'to_work' | 'to_home'
@@ -92,7 +99,7 @@ export interface CommutePlan {
   maxWalkMeters: number // 0 = no walking
   preferredPickup?: Place
   /** weekly: `days` recur from startDate (until endDate). dates: only the picked `dates`, priced per day. */
-  scheduleMode: 'weekly' | 'dates'
+  scheduleMode: 'weekly' | 'dates' | 'recurring'
   startDate: string // ISO yyyy-mm-dd
   endDate?: string
   dates: string[] // ISO dates (dates mode)
@@ -137,6 +144,19 @@ export interface Match {
   pricing?: 'monthly' | 'per_day'
   perDayContribution?: number
   bookedDays?: number
+  /** derived by the matching engine — see src/domain/matching.ts */
+  explanation?: string[]
+  pickupDeviationMinutes?: number
+  walkingEstimated?: boolean
+  /** true when road routing was unavailable and detour/walk/overlap are the database's straight-line estimates */
+  routingEstimated?: boolean
+  /** Server-issued identifier for the exact offer reviewed before requesting. */
+  quoteId?: string
+  coveredDays?: Weekday[]
+  uncoveredDays?: Weekday[]
+  coveredDates?: string[]
+  uncoveredDates?: string[]
+  partial?: boolean
 }
 
 export interface ContributionBreakdown {
@@ -217,6 +237,19 @@ export interface LiftClub {
   nextContributionDate: string
   paymentStatus: PaymentStatus
   paused: boolean
+  /** Immutable schedule agreed when membership was accepted. */
+  schedule?: AgreedSchedule
+}
+
+export interface AgreedSchedule {
+  scheduleMode: 'weekly' | 'dates'
+  days: Weekday[]
+  dates: string[]
+  startDate: string
+  endDate?: string
+  skipHolidays: boolean
+  monthlyContribution: number
+  perDayContribution?: number
 }
 
 export type ExceptionKind =
@@ -233,6 +266,7 @@ export interface ScheduleException {
   kind: ExceptionKind
   date: string // ISO date or 'ongoing'
   note?: string
+  legId?: string
 }
 
 export interface PaymentMethod {
@@ -264,6 +298,7 @@ export interface PassengerLocation extends LatLng {
 }
 
 export interface TrackingSnapshot {
+  riders?: { passengerId: string; firstName: string; status: string; pickupLabel: string; driverArrivedAt: number | null; location: PassengerLocation | null }[]
   status: TrackingStatus
   driverLocation: DriverLocation | null
   passengerLocation: PassengerLocation | null

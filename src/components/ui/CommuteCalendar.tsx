@@ -1,18 +1,11 @@
 import { useMemo, useState } from 'react'
-import { WEEKDAYS, type Weekday } from '@/domain/types'
+import { WEEKDAYS } from '@/domain/types'
 import { holidayName } from '@/lib/holidays'
-import { formatDays } from '@/lib/format'
+import { isCommuteDay as domainIsCommuteDay, scheduleSummary as domainSummary, weekdaysOfDates as domainWeekdays, weekdayOf as domainWeekdayOf, type CommuteSchedule } from '@/domain/schedule'
 import { Icon } from './Icon'
 import { DayPicker, Segmented, Toggle } from './kit'
 
-export interface ScheduleValue {
-  scheduleMode: 'weekly' | 'dates'
-  days: Weekday[]
-  startDate: string
-  endDate?: string
-  dates: string[]
-  skipHolidays: boolean
-}
+export type ScheduleValue = CommuteSchedule
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const isoOf = (y: number, m: number, d: number) => `${y}-${pad(m + 1)}-${pad(d)}`
@@ -20,27 +13,26 @@ const todayIso = () => {
   const t = new Date()
   return isoOf(t.getFullYear(), t.getMonth(), t.getDate())
 }
-/** Mon=0 … Sun=6 (Lifty weekday) for an ISO date */
-export const weekdayOf = (iso: string): Weekday => ((new Date(`${iso}T12:00:00`).getDay() + 6) % 7) as Weekday
+export const weekdayOf = domainWeekdayOf
 const pretty = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString('en-ZA', { weekday: 'short', day: 'numeric', month: 'short' })
 
-/** Is this date a commuting day under the schedule? */
-export function isCommuteDay(v: ScheduleValue, iso: string): boolean {
-  if (v.skipHolidays && holidayName(iso)) return false
-  if (v.scheduleMode === 'dates') return v.dates.includes(iso)
-  return v.days.includes(weekdayOf(iso)) && iso >= v.startDate && (!v.endDate || iso <= v.endDate)
-}
+export const isCommuteDay = domainIsCommuteDay
+export const weekdaysOfDates = domainWeekdays
+export const scheduleSummary = (v: ScheduleValue) => domainSummary(v, todayIso())
 
-/** Weekdays covered by specific dates (used for matching). */
-export const weekdaysOfDates = (dates: string[]): Weekday[] => [...new Set(dates.map(weekdayOf))].sort() as Weekday[]
-
-export function scheduleSummary(v: ScheduleValue): string {
-  if (v.scheduleMode === 'dates') {
-    const future = v.dates.filter((d) => d >= todayIso()).sort()
-    if (!future.length) return 'No dates picked yet'
-    return `${future.length} date${future.length === 1 ? '' : 's'} · next ${pretty(future[0])}`
+const endPresets = (start: string): { label: string; value: string | undefined }[] => {
+  const plus = (months: number) => {
+    const d = new Date(`${start}T12:00:00`)
+    d.setMonth(d.getMonth() + months)
+    return d.toISOString().slice(0, 10)
   }
-  return `${formatDays(v.days)} · from ${pretty(v.startDate)}${v.endDate ? ` to ${pretty(v.endDate)}` : ''}`
+  const y = Number(start.slice(0, 4))
+  return [
+    { label: 'No end date', value: undefined },
+    { label: '3 months', value: plus(3) },
+    { label: '6 months', value: plus(6) },
+    { label: `Until 31 Dec`, value: `${y}-12-31` },
+  ]
 }
 
 export function CommuteCalendar({ value, onChange }: { value: ScheduleValue; onChange: (patch: Partial<ScheduleValue>) => void }) {
@@ -90,15 +82,26 @@ export function CommuteCalendar({ value, onChange }: { value: ScheduleValue; onC
         label="How often"
         value={value.scheduleMode}
         onChange={(scheduleMode) => onChange(scheduleMode === 'dates' ? { scheduleMode, days: weekdaysOfDates(value.dates) } : { scheduleMode, days: value.days.length ? value.days : [0, 1, 2, 3, 4] })}
-        options={[{ value: 'weekly', label: 'Every week' }, { value: 'dates', label: 'Specific dates' }]}
+        options={[{ value: 'weekly', label: 'Weekly' }, { value: 'dates', label: 'Specific dates' }, { value: 'recurring', label: 'Ongoing' }]}
       />
 
-      {value.scheduleMode === 'weekly' ? (
+      {value.scheduleMode !== 'dates' ? (
         <>
           <div className="stack-2">
             <p className="eyebrow">Days I travel</p>
             <DayPicker value={value.days} onChange={(days) => onChange({ days })} />
           </div>
+          {value.scheduleMode === 'recurring' && (
+            <div className="stack-2">
+              <p className="eyebrow">How long?</p>
+              <div className="chips" role="radiogroup" aria-label="How long">
+                {endPresets(value.startDate).map((p) => (
+                  <button key={p.label} type="button" role="radio" aria-checked={value.endDate === p.value} className={`chip ${value.endDate === p.value ? 'on' : ''}`} onClick={() => onChange({ endDate: p.value })}>{p.label}</button>
+                ))}
+              </div>
+              <p className="small muted">Starting {pretty(value.startDate)}. Tap a date below to change the start, or pick a custom end date.</p>
+            </div>
+          )}
           <div className="row-flex between">
             <span className="small muted">Tap the calendar to set</span>
             <div className="chips">
@@ -124,8 +127,8 @@ export function CommuteCalendar({ value, onChange }: { value: ScheduleValue; onC
             const past = iso < today
             const hol = holidayName(iso)
             const on = !past && isCommuteDay(value, iso)
-            const isStart = value.scheduleMode === 'weekly' && iso === value.startDate
-            const isEnd = value.scheduleMode === 'weekly' && iso === value.endDate
+            const isStart = value.scheduleMode !== 'dates' && iso === value.startDate
+            const isEnd = value.scheduleMode !== 'dates' && iso === value.endDate
             return (
               <button
                 key={iso}
@@ -146,7 +149,7 @@ export function CommuteCalendar({ value, onChange }: { value: ScheduleValue; onC
         <div className="cal-legend small muted">
           <span><i className="cal-key on" /> Commuting</span>
           <span><i className="cal-key hol" /> Public holiday</span>
-          {value.scheduleMode === 'weekly' && <span><i className="cal-key start" /> Start / end</span>}
+          {value.scheduleMode !== 'dates' && <span><i className="cal-key start" /> Start / end</span>}
         </div>
       </div>
 
@@ -163,7 +166,7 @@ export function CommuteCalendar({ value, onChange }: { value: ScheduleValue; onC
         <div className="banner-text">
           <strong>{scheduleSummary(value)}</strong>
           {countThisMonth} commuting day{countThisMonth === 1 ? '' : 's'} in {monthLabel.split(' ')[0]}
-          {value.scheduleMode === 'weekly' && value.endDate && (
+          {value.scheduleMode !== 'dates' && value.endDate && (
             <> · <button type="button" className="btn-text" style={{ minHeight: 0, padding: 0 }} onClick={() => onChange({ endDate: undefined })}>Remove end date</button></>
           )}
         </div>

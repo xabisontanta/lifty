@@ -16,12 +16,13 @@ import { formatDate, formatDays, formatDistance, rand, timeAgo } from '@/lib/for
 import { useAsync, useOnline } from '@/hooks/useAsync'
 import { useTracking } from '@/hooks/useTracking'
 import { usePassengerClubs } from '@/hooks/useClubs'
-import { api, ApiError, isLive, type CommuteInstance } from '@/services/api'
+import { api, ApiError, getLastMatchSuggestions, isLive, type CommuteInstance } from '@/services/api'
 import { instanceToMatch } from '@/services/liveApi'
 import { resetTrackingFeed } from '@/services/tracking'
 import { currentUserId } from '@/services/supabase'
 import { useApp } from '@/store/app'
 import { shareInvite } from './Tabs'
+import {shareCommute} from '@/services/share'
 
 const isOffline = (e: Error | null) => e instanceof ApiError && e.code === 'offline'
 
@@ -150,16 +151,26 @@ export function MatchDetail() {
               <li className="row-flex small"><i className="legend-swatch" style={{ borderTop: '3px dotted var(--navy)' }} /> Your walk to {m.pickup.label}</li>
             </ul>
 
+            {m.partial&&<Banner tone="warning">Partial match. Uncovered: {m.uncoveredDates?.length?m.uncoveredDates.join(', '):formatDays(m.uncoveredDays??[])}. Trips will only be scheduled for the covered days.</Banner>}
             <Card className="mint" style={{ marginTop: 12 }}>
               <p className="eyebrow" style={{ color: 'var(--teal-700)' }}>Why this works</p>
-              <p>
-                {m.driver.firstName} already drives this way and passes <strong>{m.pickup.label}</strong>. You walk <strong>{m.walkingMinutes} min</strong>; they detour just <strong>{m.driverDeviationMinutes} min</strong>.
-              </p>
+              {m.explanation?.length ? (
+                <ul className="stack-2 small" style={{ marginTop: 6 }}>
+                  {m.explanation.map((line) => <li key={line}>• {line}</li>)}
+                </ul>
+              ) : (
+                <p>{m.driver.firstName} already drives this way and passes <strong>{m.pickup.label}</strong>. You walk <strong>{m.walkingMinutes} min</strong>; they detour just <strong>{m.driverDeviationMinutes} min</strong>.</p>
+              )}
+              {m.routingEstimated && <p className="tiny muted" style={{ marginTop: 6 }}>Detour, walk and overlap are estimates — road routing was unavailable. Search again later for exact figures.</p>}
+              {m.walkingEstimated && <p className="tiny muted" style={{ marginTop: 6 }}>Walking time is an estimate — no pedestrian route was available for this spot.</p>}
+              {m.partial && <p className="small" style={{ marginTop: 8, color: '#92600a' }}><strong>Partial schedule:</strong> {m.driver.firstName} doesn’t drive on {m.uncoveredDates?.length ?? 0} of your selected day{(m.uncoveredDates?.length ?? 0) === 1 ? '' : 's'}.</p>}
             </Card>
 
             <div className="metrics" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
               <MetricTile icon="route" label="Route overlap" value={`${m.routeOverlap}%`} tone="teal" />
-              <MetricTile icon="walk" label="Walk to pickup" value={`${m.walkingMinutes} min`} sub={formatDistance(m.walkingDistanceM)} tone="blue" />
+              {m.walkingDistanceM === 0
+                ? <MetricTile icon="pin" label="Pickup" value="Door" sub="no walking" tone="blue" />
+                : <MetricTile icon="walk" label="Walk to pickup" value={`${m.walkingMinutes} min`} sub={formatDistance(m.walkingDistanceM)} tone="blue" />}
               <MetricTile icon="navigation" label="Est. driver deviation" value={`${m.driverDeviationMinutes} min`} sub={`+${m.additionalDistanceKm} km`} tone="amber" />
               <MetricTile icon="seat" label="Seats available" value={m.availableSeats} sub={formatDays(m.days)} />
             </div>
@@ -303,16 +314,32 @@ export function RequestSent() {
 /* ---------- 16 Match accepted ---------- */
 export function Accepted() {
   const nav = useNavigate()
+  const toast = useToast()
+  const [saving, setSaving] = useState(false)
   const { state, update } = useApp()
   const req = state.request
-  const { data: m, loading, error, retry } = useAsync(() => (req ? api.getMatch(req.matchId) : Promise.reject(new Error('No accepted request'))), [req?.matchId])
+  const { data: m, loading, error, retry } = useAsync(async () => {
+    if (!req) throw new Error('No accepted request')
+    const saved = isLive() ? await api.getJoinRequest(req.id) : req
+    if (saved.status !== 'accepted') throw new Error('The driver has not accepted this request yet.')
+    return api.getMatch(saved.matchId)
+  }, [state.user?.id, req?.id, req?.matchId])
   if (loading) return <Screen><ScreenBody><CardSkeleton /></ScreenBody></Screen>
   if (error || !m || !req) return <Screen><ScreenHeader title="" onBack={() => nav('/p/home')} /><ScreenBody><ErrorState message={error?.message ?? 'Something went wrong'} onRetry={retry} /></ScreenBody></Screen>
-  const go = () => {
-    const club = buildClub(m, req, { firstName: state.user?.firstName ?? 'You', lastInitial: state.user?.lastInitial ?? '', avatarHue: state.user?.avatarHue ?? 160 })
-    // live data is re-fetched on My Commute; this is the immediate local view
-    update(m.direction === 'to_home' ? { returnClub: club, request: null } : { club, request: null })
-    nav('/p/commute', { replace: true })
+  const go = async () => {
+    setSaving(true)
+    try {
+      if (isLive()) {
+        const saved = await api.getMyClubs()
+        if (!saved?.asPassenger.some(c => c.matchId === req.matchId)) throw new Error('Could not restore the accepted lift club. Please try again.')
+        update({ club: saved.asPassenger.find(c => c.direction === 'to_work') ?? null, returnClub: saved.asPassenger.find(c => c.direction === 'to_home') ?? null, request: null })
+      } else {
+        const club = buildClub(m, req, { id: state.user?.id, firstName: state.user?.firstName ?? 'You', lastInitial: state.user?.lastInitial ?? '', avatarHue: state.user?.avatarHue ?? 160 }, state.plan)
+        update(m.direction === 'to_home' ? { returnClub: club, request: null } : { club, request: null })
+      }
+      nav('/p/commute', { replace: true })
+    } catch (e) { toast(e instanceof Error ? e.message : 'Could not restore your lift club', 'error') }
+    finally { setSaving(false) }
   }
   return (
     <Screen>
@@ -339,7 +366,7 @@ export function Accepted() {
         </Card>
       </ScreenBody>
       <ScreenFooter>
-        <LiftyButton onClick={go}>View Lift Club Details</LiftyButton>
+        <LiftyButton loading={saving} onClick={go}>View Lift Club Details</LiftyButton>
       </ScreenFooter>
     </Screen>
   )
@@ -358,14 +385,20 @@ export function NoMatch() {
       <ScreenHeader title="" onBack={() => nav('/p/find')} />
       <ScreenBody>
         <EmptyState icon="route" title="No strong match yet" body="No drivers on your exact route and schedule right now — but new lift clubs are added all the time. Here’s how to widen the net." />
-        <div className="stack-3">
+        {getLastMatchSuggestions().length > 0 && (
+          <Banner tone="info" icon="info">
+            <strong>What’s blocking matches</strong>
+            <ul className="small">{getLastMatchSuggestions().map((s) => <li key={s}>• {s}</li>)}</ul>
+          </Banner>
+        )}
+        <div className="stack-3" style={{ marginTop: 12 }}>
           <Card className={state.savedAlert ? 'mint' : ''}>
             <div className="row-flex">
               <span className="row-icon"><Icon name="bell" size={20} /></span>
               <div className="grow"><strong>{state.savedAlert ? 'We’ll notify you' : 'Notify me when a match appears'}</strong><p className="small muted">Your commute is saved. We’ll alert you the moment a compatible driver joins.</p></div>
             </div>
             <div style={{ marginTop: 12 }}>
-              {state.savedAlert ? <StatusBadge tone="success" icon="check">Commute saved · alerts on</StatusBadge> : <LiftyButton size="sm" onClick={async () => { await api.savePassengerCommute(state.plan).catch(() => {}); update({ savedAlert: true }); toast('Commute saved — we’ll notify you', 'success') }}>Save My Commute</LiftyButton>}
+              {state.savedAlert ? <StatusBadge tone="success" icon="check">Commute saved · alerts on</StatusBadge> : <LiftyButton size="sm" onClick={async () => { try{await api.savePassengerCommute(state.plan);await api.setMatchAlert(true);update({savedAlert:true});toast('Commute saved — alerts enabled','success')}catch(e){toast(e instanceof Error?e.message:'Could not save alert','error')} }}>Save My Commute</LiftyButton>}
             </div>
           </Card>
           <div className="list">
@@ -493,24 +526,24 @@ function TrackingBody({ match }: { match: Match }) {
             <strong>{d.firstName} {d.lastInitial}.</strong>
             <p className="small muted">{d.vehicle.make} {d.vehicle.model} · {d.vehicle.colour} · <span className="nowrap">{d.vehicle.registrationSummary}</span></p>
           </div>
-          <VerificationBadge label="Verified" />
+          <VerificationBadge status={d.verification.identity} label="Identity" />
         </div>
         {pre && !state.lowData && <VehiclePhotoCard vehicle={d.vehicle} compact />}
 
-        {s.status === 'both-at-pickup' && <LiftyButton icon="car" onClick={() => feed.markCollected()}>I’m in the car</LiftyButton>}
+        {s.status==='both-at-pickup'&&<Banner tone="info">Your driver confirms collection for your pickup.</Banner>}
         {(s.status === 'driver-approaching' || s.status === 'passenger-approaching') && !s.passengerAtPickup && (
           <div className="row-flex">
             <div className="grow"><SecondaryButton size="sm" icon="pin" onClick={() => feed.markPassengerAtPickup()}>I’m at the pickup</SecondaryButton></div>
             <NavigateButton destination={match.pickup.location} mode="walking" label="Walk there" />
           </div>
         )}
-        {s.status === 'destination-reached' && <LiftyButton onClick={() => { feed.endSharing(); nav('/p/complete', { replace: true }) }}>Complete commute</LiftyButton>}
-        {s.status === 'ended' && <LiftyButton onClick={() => nav(s.noShow ? '/p/commute' : '/p/complete', { replace: true })}>{s.noShow ? 'Back to my commute' : 'View summary'}</LiftyButton>}
+        {s.status === 'destination-reached' && <LiftyButton onClick={async () => {const ok=await feed.endSharing();if(ok!==false)nav('/p/complete'+((match as Match&{liveInstance?:CommuteInstance}).liveInstance?`?instance=${(match as Match&{liveInstance:CommuteInstance}).liveInstance.id}`:''), { replace: true })}}>End my sharing</LiftyButton>}
+        {s.status === 'ended' && <LiftyButton onClick={() => nav(s.noShow ? '/p/commute' : '/p/complete'+((match as Match&{liveInstance?:CommuteInstance}).liveInstance?`?instance=${(match as Match&{liveInstance:CommuteInstance}).liveInstance.id}`:''), { replace: true })}>{s.noShow ? 'Back to my commute' : 'View summary'}</LiftyButton>}
 
         <div className="actions-row">
           <button className="action" onClick={() => nav(`/chat/${match.id}`, { state: { name: `${d.firstName} ${d.lastInitial}.` } })}><span className="a-ic"><Icon name="message" /></span>Message</button>
           <CallButton name={d.firstName} chatId={match.id} />
-          <button className="action" onClick={() => shareInvite(toast)}><span className="a-ic"><Icon name="share" /></span>Share</button>
+          <button className="action" onClick={async()=>{try{const result=await shareCommute(`Lifty: ${d.firstName} ${d.lastInitial}. · ${d.vehicle.colour} ${d.vehicle.make} ${d.vehicle.model} · ${d.vehicle.registrationSummary} · ${match.pickup.label} to ${match.destination.label}`);toast(result==='copied'?'Details copied':'Commute shared','success')}catch(e){if(!(e instanceof DOMException&&e.name==='AbortError'))toast('Could not share','error')}}}><span className="a-ic"><Icon name="share" /></span>Share</button>
           <button className={`action ${pre ? '' : 'danger'}`} onClick={() => (pre ? nav('/safety?report=1') : setSafety(true))}><span className="a-ic"><Icon name={pre ? 'alert' : 'shield'} /></span>{pre ? 'Report' : 'Safety'}</button>
         </div>
       </div>
@@ -539,7 +572,20 @@ function TrackingBody({ match }: { match: Match }) {
 }
 
 /* ---------- Commute completed ---------- */
-export function Complete() {
+export function Complete(){return isLive()?<LiveComplete/>:<DemoComplete/>}
+function LiveComplete(){
+ const nav=useNavigate(),selected=new URLSearchParams(useLocation().search).get('instance')
+ const {state}=useApp(),q=useAsync(()=>api.listHistory(),[state.user?.id])
+ const trip=selected?q.data?.find(t=>t.id===selected):q.data?.find(t=>['completed','missed','cancelled'].includes(t.status))
+ return <Screen><ScreenHeader title="Commute summary" onBack={()=>nav('/p/home')}/><ScreenBody>
+  {q.loading?<CardSkeleton/>:q.error?<ErrorState message={q.error.message} onRetry={q.retry}/>:trip?<div className="stack-3"><h1 className="h2">{trip.status==='completed'?'Commute completed':trip.status==='missed'?'Commute missed':trip.status==='cancelled'?'Commute cancelled':'Awaiting driver completion'}</h1>
+   <Card><KV icon="user" k="Driver" v={trip.driverName}/><KV icon="route" k="Route" v={`${trip.pickupLabel} → ${trip.destinationLabel}`}/><KV icon="calendar" k="Date" v={formatDate(trip.date)}/><KV icon="clock" k="Trip status" v={trip.status}/></Card>
+   {trip.canRate&&!trip.rated&&<LiftyButton onClick={()=>nav(`/p/rate?instance=${trip.id}`)}>Rate this commute</LiftyButton>}
+   {!['completed','missed','cancelled'].includes(trip.status)&&<Banner tone="info" action={<TextButton onClick={q.retry}>Refresh</TextButton>}>Your driver confirms the completed trip before a rating is available.</Banner>}
+  </div>:<Banner tone="info">Your confirmed commute records appear in history.</Banner>}
+ </ScreenBody><ScreenFooter><SecondaryButton onClick={()=>nav('/history')}>Commute history</SecondaryButton><SecondaryButton onClick={()=>nav('/p/home')}>Back to home</SecondaryButton></ScreenFooter></Screen>
+}
+function DemoComplete() {
   const nav = useNavigate()
   const { state } = useApp()
   const club = state.club
@@ -580,21 +626,28 @@ export function RateDriver() {
   const nav = useNavigate()
   const toast = useToast()
   const { state, update } = useApp()
+  const selected=new URLSearchParams(useLocation().search).get('instance')
+  const history=useAsync(()=>api.listHistory(),[state.user?.id])
+  const trip = selected ? history.data?.find(h => h.id === selected) : history.data?.find(h => h.canRate && !h.rated)
+  const eligible = !!trip && trip.canRate && !trip.rated && trip.status === 'completed'
   const club = state.club
   const matchId = club?.matchId ?? 'm-sipho'
-  const { data: m } = useAsync(() => api.getMatch(matchId).catch(() => null), [matchId])
-  const driver = club?.driver ?? m?.driver
+  const { data: m, loading: driverLoading } = useAsync(() => isLive()
+    ? eligible && trip ? api.getDriver(trip.driverId).then(driver => ({ driver })) : Promise.resolve(null)
+    : api.getMatch(matchId).catch(() => null), [state.user?.id, matchId, trip?.id, eligible])
+  const driver = isLive()?m?.driver:club?.driver ?? m?.driver
   const [stars, setStars] = useState(0)
   const [tags, setTags] = useState<string[]>([])
   const [comment, setComment] = useState('')
   const [sending, setSending] = useState(false)
+  useEffect(() => { setStars(0); setTags([]); setComment('') }, [trip?.id])
   const submit = async () => {
-    if (!driver) return
+    if (!driver || (isLive() && (!eligible || !trip || driver.id !== trip.driverId))) return
     setSending(true)
     try {
-      await api.submitRating({ driverId: driver.id, stars, tags, comment, legId: club?.matchId })
-      update({ ratedMatchIds: [...state.ratedMatchIds, matchId] })
-      resetTrackingFeed(matchId)
+      await api.submitRating({ driverId: driver.id, stars, tags, comment, legId: trip?.legId??club?.matchId,instanceId:trip?.id })
+      update({ ratedMatchIds: [...state.ratedMatchIds, trip?.id ?? matchId] })
+      resetTrackingFeed(trip?.legId ?? matchId)
       toast('Thanks — your feedback helps the community', 'success')
       nav('/p/home', { replace: true })
     } catch (e) {
@@ -607,6 +660,8 @@ export function RateDriver() {
     <Screen>
       <ScreenHeader title="Rate Your Driver" onBack={() => nav('/p/home')} />
       <ScreenBody>
+        {isLive() && history.error && <ErrorState message={history.error.message} onRetry={history.retry} />}
+        {isLive() && !history.loading && !eligible && <Banner tone="info">Choose an unrated completed commute from your history.</Banner>}
         {driver && (
           <div className="center stack-2" style={{ marginBottom: 20 }}>
             <div style={{ display: 'grid', placeItems: 'center' }}><Avatar first={driver.firstName} last={driver.lastInitial} hue={driver.avatarHue} size={76} src={driver.avatarUrl} /></div>
@@ -625,7 +680,7 @@ export function RateDriver() {
         <p className="eyebrow" style={{ margin: '24px 0 10px' }}>Anything else? (optional)</p>
         <textarea className="field-area" aria-label="Comment" placeholder="Add a comment for the community…" value={comment} onChange={(e) => setComment(e.target.value)} maxLength={400} />
       </ScreenBody>
-      <ScreenFooter><LiftyButton disabled={stars === 0 || !driver} loading={sending} onClick={submit}>Submit Review</LiftyButton></ScreenFooter>
+      <ScreenFooter><LiftyButton disabled={(isLive() && (!eligible || history.loading || !!history.error || driverLoading || driver?.id !== trip?.driverId)) || stars === 0 || !driver} loading={sending} onClick={submit}>Submit Review</LiftyButton></ScreenFooter>
     </Screen>
   )
 }
@@ -653,7 +708,7 @@ export function DriverPublicProfile() {
               <div className="row-flex wrap" style={{ marginTop: 12 }}>
                 <VerificationBadge status={d.verification.identity} />
                 <VerificationBadge label="Verified Vehicle" status={d.verification.vehicle} />
-                <StatusBadge tone="info" icon="clock">{d.reliability}% reliable</StatusBadge>
+                <StatusBadge tone="info" icon="clock">{d.completedArrangements?`${d.reliability}% reliable`:'New driver'}</StatusBadge>
               </div>
             </Card>
             <div style={{ marginTop: 12 }}><VehiclePhotoCard vehicle={d.vehicle} seatsAvailable={d.seatsAvailable || undefined} /></div>
@@ -666,7 +721,7 @@ export function DriverPublicProfile() {
             <div className="metrics">
               <MetricTile icon="users" label="Arrangements" value={d.completedArrangements} />
               <MetricTile icon="star" label="Ratings" value={d.ratingCount} tone="teal" />
-              <MetricTile icon="clock" label="Reliability" value={`${d.reliability}%`} tone="blue" />
+              <MetricTile icon="clock" label="Reliability" value={d.completedArrangements?`${d.reliability}%`:'No history yet'} tone="blue" />
             </div>
             <SectionTitle>Recent Reviews</SectionTitle>
             {d.reviews.length === 0 ? <p className="small muted">No reviews yet.</p> : (

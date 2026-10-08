@@ -73,6 +73,14 @@ export async function watchLocation(onFix: FixListener, onError: ErrorListener, 
   return () => navigator.geolocation.clearWatch(id)
 }
 
+/** Where to re-enable location in a mobile browser — the steps differ per phone. */
+function webLocationHelp() {
+  const ua = navigator.userAgent
+  if (/iPhone|iPad|iPod/.test(ua)) return 'Location is blocked. On iPhone: Settings → Privacy & Security → Location Services → Safari Websites → While Using. Then reload Lifty.'
+  if (/Android/.test(ua)) return 'Location is blocked. In Chrome, tap the icon left of the address → Permissions → Location → Allow. Then reload Lifty.'
+  return 'Location is blocked. Allow location for this site in your browser settings, then reload Lifty.'
+}
+
 /** One-shot fix for "use my location" (foreground). Rejects with a human-readable message. */
 export function getCurrentPosition(timeoutMs = 15000): Promise<DeviceFix> {
   return new Promise((resolve, reject) => {
@@ -88,7 +96,7 @@ export function getCurrentPosition(timeoutMs = 15000): Promise<DeviceFix> {
             e.code === e.PERMISSION_DENIED
               ? isNative()
                 ? 'Location is off for Lifty. Turn it on in Settings → Lifty → Location.'
-                : 'Location is blocked. On iPhone: Settings → Privacy & Security → Location Services → Safari Websites → While Using. Then reload Lifty.'
+                : webLocationHelp()
               : e.code === e.TIMEOUT
                 ? 'Couldn’t get a GPS fix. Step outside or try again.'
                 : 'We can’t get your location right now.',

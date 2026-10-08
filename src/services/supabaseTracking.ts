@@ -12,17 +12,15 @@ import { reportError } from './monitoring'
 /**
  * Real two-way live tracking.
  *
- * - Each device streams its own GPS (background-capable on native) into the private
- *   Realtime channel `commute:<instanceId>`. RLS on realtime.messages only lets members
- *   of this commute join, and only inside the sharing window.
- * - Positions are ephemeral broadcasts (no DB write per ping); a breadcrumb is stored
- *   every ~30 s for the safety record and purged after 30 days.
+ * - Every fix goes through publish_location, which checks consent, membership and
+ *   the sharing window before broadcasting to individual driver/passenger channels.
+ * - Owner/safety-reviewer breadcrumbs are sampled about every 30 seconds and
+ *   purged after 30 days. Channel admission alone never authorizes a new fix.
  * - Pickup state changes are explicit RPCs and arrive back via postgres_changes.
  * - ETAs come from Mapbox Directions (driving-traffic / walking), refreshed periodically.
  */
 
 const BROADCAST_EVERY_MS = 4000
-const BREADCRUMB_EVERY_MS = 30000
 const ARRIVED_RADIUS_M = 150
 
 interface PeerFix extends LatLng {
@@ -33,7 +31,13 @@ interface PeerFix extends LatLng {
 
 export class SupabaseTrackingFeed implements TrackingFeed {
   private listeners = new Set<(s: TrackingSnapshot) => void>()
-  private channel: RealtimeChannel | null = null
+  private channels: RealtimeChannel[] = []
+  private disposed=false
+  private stopped=false
+  private epoch=0
+  private selectedRiderId: string | null=null
+  private peers=new Map<string,PeerFix>()
+  private gpsStarting=false
   private rowChannel: RealtimeChannel | null = null
   private stopGps: (() => void) | null = null
   private timers: ReturnType<typeof setInterval>[] = []
@@ -41,7 +45,6 @@ export class SupabaseTrackingFeed implements TrackingFeed {
   private me: PeerFix | null = null
   private peer: PeerFix | null = null
   private lastBroadcast = 0
-  private lastCrumb = 0
   private linkDown = false
   private riderStatus: string
   private instanceStatus: CommuteInstance['status']
@@ -51,11 +54,12 @@ export class SupabaseTrackingFeed implements TrackingFeed {
   private snapshot: TrackingSnapshot
   private error: string | null = null
 
-  constructor(private inst: CommuteInstance, private myId: string, private opts: { lowData?: boolean } = {}) {
+  constructor(private inst: CommuteInstance, private myId: string, private opts: { lowData?: boolean; sharingConsent?: boolean } = {}) {
+    this.selectedRiderId=inst.riders.find(r=>r.status==='expected'||r.status==='at_pickup')?.passengerId??inst.riders[0]?.passengerId??null
     const rider = this.rider()
     this.riderStatus = rider?.status ?? 'expected'
     this.instanceStatus = inst.status
-    this.driverArrivedAt = inst.driverArrivedAt
+    this.driverArrivedAt = rider?.driverArrivedAt ?? null
     this.eta.destination = Math.round(inst.routeDurationS / 60)
     this.snapshot = this.compute()
     void this.start()
@@ -65,7 +69,7 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     return this.inst.isDriver
   }
   private rider() {
-    return this.isDriver ? this.inst.riders.find((r) => r.status !== 'absent') ?? this.inst.riders[0] : this.inst.riders.find((r) => r.passengerId === this.myId)
+    return this.isDriver ? this.inst.riders.find(r=>r.passengerId===this.selectedRiderId) : this.inst.riders.find((r) => r.passengerId === this.myId)
   }
 
   getSnapshot() {
@@ -82,59 +86,26 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     return this.error
   }
 
-  // ---------- explicit actions ----------
-  markDriverArrived() {
-    void this.rpc('mark_driver_arrived', { p_instance: this.inst.id }).then(() => {
-      this.driverArrivedAt = this.driverArrivedAt ?? Date.now()
-      this.emit()
-    })
+  selectRider(passengerId: string) {
+    if(!this.isDriver || !this.inst.riders.some(r=>r.passengerId===passengerId)) return
+    this.selectedRiderId=passengerId;this.syncRider();this.emit();void this.refreshEtas()
   }
-  markPassengerAtPickup() {
-    const r = this.rider()
-    if (!r) return
-    void this.rpc('mark_rider_status', { p_instance: this.inst.id, p_passenger: r.passengerId, p_status: 'at_pickup' }).then(() => {
-      this.riderStatus = 'at_pickup'
-      this.emit()
-    })
+  private syncRider(){ const r=this.rider();this.riderStatus=r?.status??'absent';this.driverArrivedAt=r?.driverArrivedAt??null;this.peer=this.isDriver?(this.peers.get(r?.passengerId??'')??null):(this.peers.get(this.inst.driver.id)??null) }
+  setConsent(consent:boolean){if(consent===this.opts.sharingConsent)return;this.opts.sharingConsent=consent;if(!consent)this.stopOnlyGps();else if(this.channels.length)void this.startGps()}
+  markDriverArrived(){const r=this.rider();if(r)void this.action('mark_driver_arrived',{p_instance:this.inst.id,p_passenger:r.passengerId},()=>{r.driverArrivedAt=Date.now();this.syncRider()})}
+  markPassengerAtPickup(){this.changeRider('at_pickup')}
+  markCollected(){this.changeRider('collected')}
+  markNoShow(){this.changeRider('no_show')}
+  private changeRider(status:string){const r=this.rider();if(!r)return;void this.action('mark_rider_status',{p_instance:this.inst.id,p_passenger:r.passengerId,p_status:status},()=>{r.status=status;this.syncRider();if(!this.isDriver&&status==='collected')this.stopOnlyGps()})}
+  private async action(name:string,args:Record<string,unknown>,done:()=>void){if(await this.rpc(name,args)){done();this.emit()}}
+  async endSharing(){
+    const ok=await this.rpc(this.isDriver?'complete_instance':'stop_my_sharing',{p_instance:this.inst.id})
+    if(ok){this.stopped=true;if(this.isDriver)this.instanceStatus='completed';this.stopSharing();this.emit()}
+    return ok
   }
-  markCollected() {
-    const r = this.rider()
-    if (!r) return
-    void this.rpc('mark_rider_status', { p_instance: this.inst.id, p_passenger: r.passengerId, p_status: 'collected' }).then(() => {
-      this.riderStatus = 'collected'
-      this.instanceStatus = 'underway'
-      this.emit()
-    })
-  }
-  markNoShow() {
-    const r = this.rider()
-    if (!r) return
-    void this.rpc('mark_rider_status', { p_instance: this.inst.id, p_passenger: r.passengerId, p_status: 'no_show' }).then(() => {
-      this.riderStatus = 'no_show'
-      this.emit()
-    })
-  }
-  endSharing() {
-    if (this.isDriver) void this.rpc('complete_instance', { p_instance: this.inst.id }).then(() => (this.instanceStatus = 'completed'))
-    this.instanceStatus = this.isDriver ? 'completed' : this.instanceStatus
-    this.stopSharing()
-    this.riderStatus = this.riderStatus === 'collected' ? 'dropped_off' : this.riderStatus
-    this.emit(true)
-  }
-  setLinkDown(down: boolean) {
-    this.linkDown = down
-  }
-  restart() {
-    this.emit()
-  }
-  dispose() {
-    this.stopSharing()
-    this.timers.forEach(clearInterval)
-    this.timers = []
-    if (this.windowTimer) clearTimeout(this.windowTimer)
-    if (this.rowChannel) void sb().removeChannel(this.rowChannel)
-    this.listeners.clear()
-  }
+  setLinkDown(down:boolean){this.linkDown=down}
+  restart(){if(!this.disposed&&!this.stopped) {this.error=null;if(!this.channels.length)void this.startSharing();else void this.refreshAuthorization();this.emit()}}
+  dispose(){this.disposed=true;this.stopSharing();this.timers.forEach(clearInterval);this.timers=[];if(this.windowTimer)clearTimeout(this.windowTimer);if(this.rowChannel)void sb().removeChannel(this.rowChannel);this.listeners.clear()}
 
   // ---------- lifecycle ----------
   private async start() {
@@ -144,15 +115,13 @@ export class SupabaseTrackingFeed implements TrackingFeed {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'commute_instances', filter: `id=eq.${this.inst.id}` }, (p) => {
         const n = p.new as { status: CommuteInstance['status']; driver_arrived_at: string | null }
         this.instanceStatus = n.status
-        this.driverArrivedAt = n.driver_arrived_at ? new Date(n.driver_arrived_at).getTime() : null
+        if(n.status==='completed'||n.status==='cancelled')this.stopSharing()
         this.emit()
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'instance_riders', filter: `instance_id=eq.${this.inst.id}` }, (p) => {
-        const n = p.new as { passenger_id: string; status: string }
-        if (n.passenger_id === this.rider()?.passengerId) {
-          this.riderStatus = n.status
-          this.emit()
-        }
+        const n=p.new as {passenger_id:string;status:string;driver_arrived_at:string|null}
+        const r=this.inst.riders.find(r=>r.passengerId===n.passenger_id)
+        if(r){r.status=n.status;r.driverArrivedAt=n.driver_arrived_at?new Date(n.driver_arrived_at).getTime():null;this.syncRider();if(!this.isDriver&&n.status!=='expected'&&n.status!=='at_pickup')this.stopOnlyGps();this.emit()}
       })
       .subscribe()
 
@@ -162,67 +131,57 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     } else if (now <= this.inst.sharingEndsAt) {
       await this.startSharing()
     }
-    this.timers.push(setInterval(() => this.emit(), 1000))
+    if(this.disposed)return
+    this.timers.push(setInterval(() => {if(Date.now()>this.inst.sharingEndsAt)this.stopSharing();this.emit()},1000))
+    this.timers.push(setInterval(()=>void this.refreshAuthorization(),5000))
     this.timers.push(setInterval(() => void this.refreshEtas(), this.opts.lowData ? 60000 : 30000))
   }
 
-  private async startSharing() {
-    try {
+  private windowOpen(){return !this.disposed&&!this.stopped&&Date.now()>=this.inst.sharingStartsAt&&Date.now()<=this.inst.sharingEndsAt&&!['completed','cancelled'].includes(this.instanceStatus)}
+  private async startSharing(){
+    if(!this.windowOpen()||this.channels.length)return
+    const epoch=++this.epoch
+    try{
       await sb().realtime.setAuth()
-      this.channel = sb().channel(`commute:${this.inst.id}`, { config: { private: true, broadcast: { self: false } } })
-      this.channel
-        .on('broadcast', { event: 'loc' }, ({ payload }) => {
-          if (this.linkDown) return
-          const p = payload as { from: string; lat: number; lng: number; heading: number | null; speed: number | null; at: number }
-          if (p.from === this.myId) return
-          this.peer = { lat: p.lat, lng: p.lng, heading: p.heading, speed: p.speed, at: p.at }
-          this.emit()
-        })
-        .subscribe((status) => {
-          // supabase-js retries joins on its own; only surface an error while not subscribed
-          if (status === 'SUBSCRIBED' && this.error) {
-            this.error = null
-            this.emit()
-          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            this.error = 'Reconnecting live location…'
-            this.emit()
-          }
-        })
-      this.stopGps = await watchLocation(
-        (fix) => this.onMyFix(fix),
-        (msg) => {
-          this.error = msg
-          this.emit()
-        },
-        { lowData: this.opts.lowData },
-      )
-      void this.refreshEtas()
-    } catch (e) {
-      reportError(e, { where: 'startSharing' })
-      this.error = 'Couldn’t start live location.'
-      this.emit()
-    }
+      if(epoch!==this.epoch||!this.windowOpen())return
+      const riders=this.isDriver?this.inst.riders.filter(r=>!['absent','no_show','dropped_off'].includes(r.status)):this.inst.riders.filter(r=>r.passengerId===this.myId)
+      for(const r of riders){
+        const expected=this.isDriver?r.passengerId:this.inst.driver.id
+        const ch=sb().channel('commute:'+this.inst.id+':'+r.passengerId,{config:{private:true}})
+        ch.on('broadcast',{event:'loc'},({payload})=>{
+          if(!this.windowOpen()||this.linkDown||payload.from!==expected||!Number.isFinite(payload.lat)||!Number.isFinite(payload.lng))return
+          this.peers.set(expected,payload);this.syncRider();this.emit()
+        }).subscribe(status=>{if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')this.error='Reconnecting live location…';else if(status==='SUBSCRIBED')this.error=null;this.emit()})
+        this.channels.push(ch)
+      }
+      await this.startGps();void this.refreshEtas()
+    }catch(e){reportError(e,{where:'startSharing'});this.error='Could not connect live location';this.emit()}
   }
-
-  private stopSharing() {
-    this.stopGps?.()
-    this.stopGps = null
-    if (this.channel) void sb().removeChannel(this.channel)
-    this.channel = null
+  private async refreshAuthorization(){
+    if(!this.windowOpen()){this.stopSharing();return}
+    const {data,error}=await sb().rpc('can_track',{p_instance:this.inst.id})
+    if(error||!data){this.stopOnlyGps();if(error)this.error='Sharing unavailable. Check your session and consent.';return}
+    if(this.opts.sharingConsent)await this.startGps()
   }
-
-  private onMyFix(fix: DeviceFix) {
-    this.me = { lat: fix.lat, lng: fix.lng, heading: fix.heading, speed: fix.speedKmh, at: fix.at }
-    const now = Date.now()
-    if (this.channel && !this.linkDown && now - this.lastBroadcast > BROADCAST_EVERY_MS) {
-      this.lastBroadcast = now
-      void this.channel.send({ type: 'broadcast', event: 'loc', payload: { from: this.myId, ...this.me } })
-    }
-    if (now - this.lastCrumb > BREADCRUMB_EVERY_MS) {
-      this.lastCrumb = now
-      void sb().rpc('record_location', { p_instance: this.inst.id, p_lng: fix.lng, p_lat: fix.lat, p_heading: fix.heading, p_speed: fix.speedKmh })
-    }
-    // automatic "I'm here" suggestion is left to the UI — state changes stay explicit
+  private async startGps(){
+    if(!this.opts.sharingConsent||!this.windowOpen()||this.stopGps||this.gpsStarting)return
+    this.gpsStarting=true
+    const epoch=this.epoch
+    try{
+      const {data,error}=await sb().rpc('can_track',{p_instance:this.inst.id})
+      if(error||!data||epoch!==this.epoch||!this.opts.sharingConsent||!this.windowOpen())return
+      const stop=await watchLocation(fix=>this.onMyFix(fix),message=>{this.error=message;this.emit()},{lowData:this.opts.lowData})
+      if(epoch!==this.epoch||!this.opts.sharingConsent||!this.windowOpen())stop();else this.stopGps=stop
+    }catch(e){this.error=e instanceof Error?e.message:'Location unavailable';this.emit()}
+    finally{this.gpsStarting=false}
+  }
+  private stopOnlyGps(){++this.epoch;this.stopGps?.();this.stopGps=null;this.me=null}
+  private stopSharing(){this.stopOnlyGps();this.channels.forEach(ch=>void sb().removeChannel(ch));this.channels=[];this.peers.clear();this.peer=null}
+  private onMyFix(fix:DeviceFix){
+    if(!this.opts.sharingConsent||!this.windowOpen()) {this.stopOnlyGps();return}
+    if(!this.isDriver&&!['expected','at_pickup'].includes(this.riderStatus)){this.stopOnlyGps();return}
+    this.me={lat:fix.lat,lng:fix.lng,heading:fix.heading,speed:fix.speedKmh,at:fix.at}
+    if(!this.linkDown&&Date.now()-this.lastBroadcast>=BROADCAST_EVERY_MS){this.lastBroadcast=Date.now();void this.rpc('publish_location',{p_instance:this.inst.id,p_lng:fix.lng,p_lat:fix.lat,p_heading:fix.heading,p_speed:fix.speedKmh}).then(ok=>{if(!ok)this.stopOnlyGps()})}
     this.emit()
   }
 
@@ -260,15 +219,15 @@ export class SupabaseTrackingFeed implements TrackingFeed {
   }
 
   private rpc(fn: string, args: Record<string, unknown>) {
-    return sb()
-      .rpc(fn, args)
+    return Promise.resolve(sb().rpc(fn, args))
       .then(({ error }) => {
         if (error) {
           this.error = error.message.replace(/^.*?ERROR:\s*/, '')
           this.emit()
-          throw error
+          return false
         }
-      })
+        return true
+      }).catch(e=>{this.error=e instanceof Error?e.message:'Connection unavailable';this.emit();return false})
   }
 
   private emit(force = false) {
@@ -301,7 +260,7 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     const nearDestination = !!d && distanceM(d, this.inst.destination.location) < ARRIVED_RADIUS_M
 
     let status: TrackingStatus
-    if (this.instanceStatus === 'completed' || this.instanceStatus === 'cancelled' || now > this.inst.sharingEndsAt || this.riderStatus === 'no_show')
+    if (this.stopped || (!this.isDriver&&['absent','no_show'].includes(this.riderStatus)) || this.instanceStatus === 'completed' || this.instanceStatus === 'cancelled' || now > this.inst.sharingEndsAt)
       status = this.riderStatus === 'dropped_off' || nearDestination ? 'destination-reached' : 'ended'
     else if (now < this.inst.sharingStartsAt) status = 'sharing-soon'
     else if (collected) status = nearDestination ? 'destination-reached' : 'underway'
@@ -312,6 +271,7 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     const driverLocation: DriverLocation | null = d ? { lat: d.lat, lng: d.lng, heading: d.heading ?? 0, speed: d.speed ?? 0, updatedAt: d.at } : null
     const passengerLocation: PassengerLocation | null = p ? { lat: p.lat, lng: p.lng, updatedAt: p.at } : null
     return {
+      riders:this.isDriver?this.inst.riders.map(r=>({passengerId:r.passengerId,firstName:r.firstName,status:r.status,pickupLabel:r.pickup.label,driverArrivedAt:r.driverArrivedAt??null,location:this.peers.has(r.passengerId)?{...this.peers.get(r.passengerId)!,updatedAt:this.peers.get(r.passengerId)!.at}:null})):undefined,
       status,
       driverLocation,
       passengerLocation,

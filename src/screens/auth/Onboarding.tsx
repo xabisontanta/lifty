@@ -8,6 +8,7 @@ import { formatDays, formatDistance, rand } from '@/lib/format'
 import { api, contributionCap, isLive, suggestedContribution, type DocKind, type DriverSetupInput } from '@/services/api'
 import { directions } from '@/services/mapbox'
 import { hasMapbox } from '@/lib/env'
+import { isScheduleReady } from '@/domain/schedule'
 import { useApp } from '@/store/app'
 import { OnboardShell } from './Auth'
 
@@ -88,7 +89,7 @@ export function PassengerSchedule() {
   const { state, updatePlan } = useApp()
   const p = state.plan
   const schedule: ScheduleValue = { scheduleMode: p.scheduleMode ?? 'weekly', days: p.days, startDate: p.startDate, endDate: p.endDate, dates: p.dates ?? [], skipHolidays: p.skipHolidays ?? true }
-  const ready = schedule.scheduleMode === 'dates' ? schedule.dates.length > 0 : schedule.days.length > 0
+  const ready = isScheduleReady(schedule)
   return (
     <OnboardShell step={2} total={3} title="Your travel schedule" subtitle="Travel every week, or pick the exact days you need a lift." onBack={() => nav(-1)} cta="Continue" disabled={!ready} onNext={() => nav('/onboarding/passenger/3')}>
       <div className="stack-5">
@@ -114,6 +115,7 @@ export function PassengerConsent() {
     try {
       await api.setConsent({ location: state.sharingConsent, terms: true })
       await api.savePassengerCommute(state.plan)
+      await api.completeOnboarding()
       update({ onboarded: true })
       nav('/p/home', { replace: true })
     } catch (e) {
@@ -214,7 +216,7 @@ export function DriverCommute() {
 export function DriverVerification() {
   const nav = useNavigate()
   const toast = useToast()
-  const { state, updateDriver } = useApp()
+  const { state, update, updateDriver } = useApp()
   const docs = state.driver.docs
   const items: { key: keyof typeof docs; kind: DocKind; title: string; icon: IconName }[] = [
     { key: 'id', kind: 'id', title: 'South African ID', icon: 'doc' },
@@ -238,11 +240,13 @@ export function DriverVerification() {
             onFile={async (f) => {
               await api.uploadDocument(it.kind, f, it.kind === 'vehicle_registration' ? state.driver.vehicle.registration : undefined)
               updateDriver({ docs: { ...state.driver.docs, [it.key]: true } })
+              const key=it.key==='id'?'identity':it.key==='registration'?'vehicle':it.key
+              update({verification:{...state.verification,[key]:'pending'}})
               toast(`${it.title} uploaded`, 'success')
             }}
           />
         ))}
-        <Banner tone="info" icon="lock">Documents are encrypted and reviewed by Lifty’s team, usually within 24 hours. Passengers only ever see a “Verified” badge — never your documents.</Banner>
+        <Banner tone="info" icon="lock">Uploads remain pending until a human reviewer approves all four current documents. Passengers see verification status; your documents stay private.</Banner>
       </div>
     </OnboardShell>
   )
@@ -252,7 +256,7 @@ export function DriverVerification() {
 export function DriverSchedule() {
   const nav = useNavigate()
   const toast = useToast()
-  const { state, update, updateDriver } = useApp()
+  const { state, update, updateDriver, refreshAccount } = useApp()
   const d = state.driver
   const c = d.commute
   const [route, setRoute] = useState<{ coordinates: [number, number][]; distanceM: number; durationS: number } | null>(null)
@@ -288,9 +292,13 @@ export function DriverSchedule() {
         }
         await api.saveDriverSetup({ vehicle: d.vehicle, legs, seats: d.seatsOpen || d.vehicle.seats, maxDeviationMin: c.maxDeviationMin, monthlyContribution: d.monthlyContribution })
       } else {
+        if(isLive())throw new Error('Select your home and work on the map and wait for the route to load.')
         await api.saveDriverSetup({ vehicle: d.vehicle, legs: [], seats: d.seatsOpen, maxDeviationMin: c.maxDeviationMin, monthlyContribution: d.monthlyContribution })
       }
-      update({ onboarded: true })
+      await api.setConsent({location:state.sharingConsent,terms:true})
+      await api.completeOnboarding()
+      if(isLive())await refreshAccount()
+      else update({ onboarded: true })
       nav('/d/home', { replace: true })
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not save your commute', 'error')

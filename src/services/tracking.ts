@@ -24,12 +24,14 @@ export interface TrackingFeed {
   getSnapshot(): TrackingSnapshot
   subscribe(listener: (s: TrackingSnapshot) => void): () => void
   /** Explicit pickup actions — we never rely on GPS inference alone. */
+  selectRider?(passengerId: string): void
+  setConsent?(consent: boolean): void
   markDriverArrived(): void
   markPassengerAtPickup(): void
   markCollected(): void
   /** driver only, after the 3-minute grace period */
   markNoShow(): void
-  endSharing(): void
+  endSharing(): void | Promise<boolean>
   /** dev: stop emitting updates so stale-location UX can be exercised */
   setLinkDown(down: boolean): void
   restart(): void
@@ -192,7 +194,7 @@ export class SimulatedTrackingFeed implements TrackingFeed {
 
     const rideFrac = Math.min(1, this.rideT / RIDE_SECONDS)
     const pickupEta = this.flags.collected || driverAtPickup ? 0 : Math.max(1, Math.ceil((1 - driverFrac) * this.pickupMinutes))
-    const walkingEta = this.flags.collected || paxAtPickup ? 0 : Math.max(1, Math.ceil((1 - walkFrac) * this.walkingMinutes))
+    const walkingEta = this.flags.collected || paxAtPickup ? 0 : this.walkingMinutes === 0 ? 0 : Math.max(1, Math.ceil((1 - walkFrac) * this.walkingMinutes))
     const walkingDistanceM = this.flags.collected || paxAtPickup ? 0 : Math.round((walkLen * (1 - walkFrac)) / 10) * 10
     const destinationEta = this.flags.collected ? Math.max(0, Math.ceil((1 - rideFrac) * this.rideMinutes)) : this.rideMinutes
 
@@ -251,18 +253,21 @@ export { distanceM }
 
 // ---- feed registry: passenger and driver screens share one feed per commute ----
 const feeds = new Map<string, TrackingFeed>()
-export function getTrackingFeed(match: Match & { liveInstance?: CommuteInstance }, opts: { lowData?: boolean } = {}): TrackingFeed {
-  const key = match.liveInstance ? `live:${match.liveInstance.id}` : match.id
+export function getTrackingFeed(match: Match & { liveInstance?: CommuteInstance }, opts: { lowData?: boolean; sharingConsent?: boolean } = {}): TrackingFeed {
+  const key = match.liveInstance ? `live:${currentUserId}:${match.liveInstance.id}` : match.id
   let f = feeds.get(key)
   if (!f) {
     f = match.liveInstance ? new SupabaseTrackingFeed(match.liveInstance, currentUserId ?? '', opts) : new SimulatedTrackingFeed(match)
     feeds.set(key, f)
   }
+  f.setConsent?.(opts.sharingConsent ?? false)
   return f
 }
 export function resetTrackingFeed(key: string) {
-  for (const k of [key, `live:${key}`]) {
+  for (const k of [...feeds.keys()].filter(k=>k===key||k.endsWith(`:${key}`))) {
     feeds.get(k)?.dispose()
     feeds.delete(k)
   }
 }
+
+export function disposeTrackingFeeds() { feeds.forEach(f=>f.dispose()); feeds.clear() }
