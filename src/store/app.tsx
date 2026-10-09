@@ -14,6 +14,8 @@ import { DEFAULT_PLAN, HOME, WORK } from '@/data/mock'
 import { api, getDataSource, isLive, type AccountSnapshot } from '@/services/api'
 import { supabase } from '@/services/supabase'
 import { clearLiveCaches } from '@/services/liveApi'
+import { setNotice, wasDeliberateSignOut } from '@/lib/notice'
+import { hasStoredLogin, isSessionProblem, isTransientProblem, restoreFailureMessage } from '@/services/sessionErrors'
 import { disposeTrackingFeeds } from '@/services/tracking'
 import { useRef } from 'react'
 
@@ -176,19 +178,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!isLive()) return null
     const n=++generation.current
     try { const snapshot=await api.getAccountSnapshot(); if(n===generation.current) applySnapshot(snapshot); return snapshot }
-    catch(e){ if(n===generation.current) { disposeTrackingFeeds(); setState({...freshLiveState(),authReady:true,authError:e instanceof Error?e.message:'Could not restore your account'}) }; throw e }
+    catch(e){
+      if(n===generation.current){
+        if(isSessionProblem(e)){
+          // expired / revoked / account gone: the only cure is a fresh sign-in, so do it cleanly instead of a dead-end error screen
+          try{await supabase?.auth.signOut({scope:'local'})}catch{/* nothing more to clear */}
+          disposeTrackingFeeds(); clearLiveCaches(); ++generation.current
+          setNotice('Your session expired. Please sign in again.')
+          setState({...freshLiveState(),authReady:true})
+        } else { disposeTrackingFeeds(); setState({...freshLiveState(),authReady:true,authError:restoreFailureMessage(e)}) }
+      }
+      throw e
+    }
   },[applySnapshot])
   useEffect(()=>{
    if(!isLive() || !supabase) return
+   const client=supabase
    let previousId: string | null= null
-   const {data}=supabase.auth.onAuthStateChange((_event,session)=>{
+   const {data}=client.auth.onAuthStateChange((event,session)=>{
     if(!isLive())return
     const id=session?.user.id ?? null
-    if(id!==previousId){ ++generation.current; disposeTrackingFeeds(); clearLiveCaches(); setState({...freshLiveState(),authReady:!id}); previousId=id }
-    if(id&&_event!=='TOKEN_REFRESHED') setTimeout(()=>{void refreshAccount().catch(()=>{})},0)
+    if(id!==previousId){
+     // a session that vanishes by itself (refresh token rejected, signed out from another tab) is explained, not silent
+     if(!id && previousId!==null && !wasDeliberateSignOut()) setNotice('You were signed out. Please sign in again.')
+     ++generation.current; disposeTrackingFeeds(); clearLiveCaches(); setState({...freshLiveState(),authReady:!id}); previousId=id
+    }
+    if(id&&event!=='TOKEN_REFRESHED') setTimeout(()=>{void refreshAccount().catch(()=>{})},0)
    })
-   void supabase.auth.getSession().then(({data})=>{if(data.session) void refreshAccount().catch(()=>{}); else setState({...freshLiveState(),authReady:true})})
-   return()=>{++generation.current;data.subscription.unsubscribe();disposeTrackingFeeds()}
+   // never sit on "Restoring your account…" forever: a hung or failed session check ends in a clear, retryable state
+   const watchdog=window.setTimeout(()=>{setState(s=>s.authReady?s:{...s,authReady:true,authError:restoreFailureMessage(new Error('timeout'))})},12000)
+   const hadLogin=hasStoredLogin()
+   client.auth.getSession().then(({data:{session},error})=>{
+    if(session){void refreshAccount().catch(()=>{});return}
+    // a transient failure (no signal) must not destroy a good stored login: offer a retry instead
+    if(error&&isTransientProblem(error)){setState({...freshLiveState(),authReady:true,authError:restoreFailureMessage(error)});return}
+    if(hadLogin)setNotice('Your session expired. Please sign in again.') // there was a saved login and it is gone: say so
+    setState({...freshLiveState(),authReady:true})
+   }).catch((e:unknown)=>{
+    if(isTransientProblem(e)){setState({...freshLiveState(),authReady:true,authError:restoreFailureMessage(e)});return}
+    void client.auth.signOut({scope:'local'}).catch(()=>undefined) // an unusable stored login: clear it
+    setState({...freshLiveState(),authReady:true})
+   })
+   return()=>{window.clearTimeout(watchdog);++generation.current;data.subscription.unsubscribe();disposeTrackingFeeds()}
   },[refreshAccount])
   const update = useCallback((patch: Partial<AppState>) => setState((s) => ({ ...s, ...patch })), [])
   const updateDriver = useCallback(

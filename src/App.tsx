@@ -70,9 +70,9 @@ function LiveAlerts() {
 
 export default function App() {
   const online = useOnline()
-  const { state } = useApp()
+  const { state, reset } = useApp()
   if (!state.authReady) return <div className="app-frame center" role="status">Restoring your account…</div>
-  if (state.authError) return <div className="app-frame center"><p role="alert">{state.authError}</p><button className="btn btn-primary" onClick={()=>location.reload()}>Retry</button><button className="btn btn-text" onClick={()=>void api.signOut()}>Sign out</button></div>
+  if (state.authError) return <div className="app-frame center" style={{ gap: 14, padding: 24, textAlign: 'center' }}><p role="alert">{state.authError}</p><button className="btn btn-primary" onClick={()=>location.reload()}>Try again</button><button className="btn btn-text" onClick={async()=>{await api.signOut().catch(()=>undefined);reset()}}>Sign out</button></div>
   return (
     <MapSettings.Provider value={{ lowData: state.lowData }}>
     <ErrorBoundary>

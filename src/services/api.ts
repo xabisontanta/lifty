@@ -564,13 +564,34 @@ let liveImpl: LiftyApi | null = null
 export function registerLiveApi(impl: LiftyApi) {
   liveImpl = impl
 }
+/**
+ * Demo mode is remembered for the current TAB only (sessionStorage) — never permanently.
+ * A permanent flag trapped people: after one tap on "Use demo", a normal browser tab never contacted the backend again
+ * (no code was ever sent) while a private tab, which starts with empty storage, worked. Flags saved by older builds
+ * (localStorage) are removed here, so a device that is stuck in demo mode heals itself on the next load.
+ */
+const demoFlag = () => {
+  try {
+    return sessionStorage.getItem(SOURCE_KEY) === 'demo'
+  } catch {
+    return false
+  }
+}
+try {
+  if (hasSupabase) localStorage.removeItem(SOURCE_KEY)
+} catch {
+  /* storage unavailable */
+}
 export function getDataSource(): DataSource {
-  const stored = readJson<DataSource | null>(SOURCE_KEY, null)
-  if (stored === 'demo' || !hasSupabase) return 'demo'
-  return 'live'
+  return !hasSupabase || demoFlag() ? 'demo' : 'live'
 }
 export function setDataSource(s: DataSource) {
-  writeJson(SOURCE_KEY, s)
+  try {
+    if (s === 'demo') sessionStorage.setItem(SOURCE_KEY, 'demo')
+    else sessionStorage.removeItem(SOURCE_KEY)
+  } catch {
+    /* storage unavailable */
+  }
 }
 export const isLive = () => getDataSource() === 'live' && !!liveImpl
 

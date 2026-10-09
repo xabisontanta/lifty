@@ -41,7 +41,7 @@ test('unauthenticated live routing ignores saved roles and sample accounts',asyn
  await page.goto('/onboarding/driver/1');await expect(page).toHaveURL(/\/welcome$/)
  await expect(page.getByText('Stale sample')).toHaveCount(0)
 })
-test('SMS signup has no password or WhatsApp delivery promise; demo fallback persists',async({page})=>{
+test('SMS signup has no password or WhatsApp delivery promise; demo fallback lasts for this tab only',async({page})=>{
  await page.route('**/auth/v1/otp',r=>r.fulfill({status:422,contentType:'application/json',body:JSON.stringify({error_code:'phone_provider_disabled',msg:'Phone signups are disabled'})}))
  await page.goto('/role');await page.getByRole('radio',{name:/Passenger/}).click();await page.getByRole('button',{name:'Continue',exact:true}).click()
  await expect(page.locator('input[type=password]')).toHaveCount(0);await expect(page.getByText(/WhatsApp/)).toHaveCount(0)
@@ -51,7 +51,8 @@ test('SMS signup has no password or WhatsApp delivery promise; demo fallback per
  await page.getByRole('button',{name:'Use demo'}).click();await expect(page).toHaveURL(/\/otp$/)
  await page.getByLabel('Digit 1',{exact:true}).fill('123456');await page.getByRole('button',{name:/^(Continue|Verify & Continue)$/}).click()
  await expect(page).toHaveURL(/\/onboarding\/passenger\/1$/)
- expect(await page.evaluate(()=>localStorage.getItem('lifty.source'))).toBe(JSON.stringify('demo'))
+ // demo is a per-tab choice: never saved permanently, or a normal tab would stay stuck in it (private tabs worked, normal ones did not)
+ expect(await page.evaluate(()=>[sessionStorage.getItem('lifty.source'),localStorage.getItem('lifty.source')])).toEqual(['demo',null])
 })
 test('mocked returning account restores server role and preferences and clears logout',async({page})=>{
  await backend(page)

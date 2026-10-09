@@ -111,12 +111,12 @@ test('a device left in demo mode is told so, and can switch to real accounts', a
   await page.addInitScript(() => {
     if (sessionStorage.getItem('seeded')) return // only on the first load, so the switch to live sticks
     sessionStorage.setItem('seeded', '1')
-    localStorage.setItem('lifty.source', JSON.stringify('demo'))
+    sessionStorage.setItem('lifty.source', 'demo')
   })
   await page.goto('/signin')
   await expect(page.getByText('Demo mode is on')).toBeVisible()
   await shot(page, '12-demo-notice')
   await page.getByRole('button', { name: 'Use real accounts' }).click()
   await expect(page).toHaveURL(/\/welcome/)
-  expect(await page.evaluate(() => localStorage.getItem('lifty.source'))).toBe(JSON.stringify('live'))
+  expect(await page.evaluate(() => sessionStorage.getItem('lifty.source'))).toBeNull()
 })

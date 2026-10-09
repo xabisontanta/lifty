@@ -24,6 +24,7 @@ import {
 import { publicFileUrl, sb, currentUserId } from './supabase'
 import { pilotMethods, pilotRpc } from './pilotApi'
 import { authFail } from './authErrors'
+import { markDeliberateSignOut } from '@/lib/notice'
 import { reverseGeocode } from './mapbox'
 import { env } from '@/lib/env'
 import { holidayName } from '@/lib/holidays'
@@ -209,7 +210,7 @@ export const liveApi: LiftyApi = {
   ...pilotMethods,
   async signUp({fullName,phone,role}) {
     const e164=toE164(phone)
-    const {error}=await sb().auth.signInWithOtp({phone:e164,options:{channel:'sms',data:{full_name:fullName,role}}})
+    const {error}=await sb().auth.signInWithOtp({phone:e164,options:{channel:'sms',data:{full_name:fullName,role,terms_accepted:true}}})
     if(error) authFail(error,'sign-up')
     sessionStorage.setItem(PENDING_KEY,JSON.stringify({fullName,role,phone:e164}))
     return {resendInSeconds:30}
@@ -239,9 +240,13 @@ export const liveApi: LiftyApi = {
     // Remove this device's destination while the current session can authorize it.
     let token:string|null=null
     try{token=localStorage.getItem('lifty.push.device')}catch{}
-    if(token&&currentUserId)await sb().from('push_tokens').delete().eq('user_id',currentUserId).eq('token',token)
+    markDeliberateSignOut()
+    // best effort: if the session is already dead (or we are offline) this must not block signing out
+    try{if(token&&currentUserId)await sb().from('push_tokens').delete().eq('user_id',currentUserId).eq('token',token)}catch{/* ignore */}
     clearLiveCaches();sessionStorage.removeItem(PENDING_KEY)
-    const {error}=await sb().auth.signOut();if(error)fail(error)
+    // scope 'local' = THIS device only: it works offline and never ends the user's sessions on their other devices/tabs
+    // (the default, 'global', would). Local sign-out cannot fail on a network or expired-token error.
+    await sb().auth.signOut({scope:'local'}).catch(()=>undefined)
     try {
       localStorage.removeItem(COMMUTE_KEY)
       localStorage.removeItem(PENDING_KEY)
@@ -628,7 +633,8 @@ export const liveApi: LiftyApi = {
         throw new ApiError('Account deletion isn’t enabled on the server yet. Email privacy@lifty.co.za and we’ll delete your data within 30 days.', 'not-configured')
       fail(error)
     }
-    await sb().auth.signOut()
+    markDeliberateSignOut()
+    await sb().auth.signOut({scope:'local'}).catch(()=>undefined) // the account is gone; just clear this device
   },
 
   async isAdmin() {

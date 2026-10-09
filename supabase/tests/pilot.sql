@@ -14,7 +14,7 @@ begin
  insert into public.profile_private(id,terms_accepted_at,location_consent_at) select id,now(),now() from unnest(array[d,p,p2,outsider,spare_driver])id;
  insert into public.vehicles(driver_id,make,model,colour,registration_summary,seats_total) values(spare_driver,'Test','Car','White','QA capacity',3);
  insert into public.driver_legs(driver_id,direction,origin_label,origin,destination_label,destination,route,route_distance_m,route_duration_s,departure_time,days,seats_open,monthly_contribution)
- values(spare_driver,'to_work','Pickup','SRID=4326;POINT(31.14 -29.55)','Work','SRID=4326;POINT(31.07 -29.72)','SRID=4326;LINESTRING(31.14 -29.55,31.07 -29.72)',32000,1800,'06:30',array[0,1,2,3,4]::smallint[],3,500) returning id into spare_leg;
+ values(spare_driver,'to_work','Pickup','SRID=4326;POINT(31.14 -29.55)','Work','SRID=4326;POINT(31.07 -29.72)','SRID=4326;LINESTRING(31.14 -29.55,31.07 -29.72)',32000,1800,'06:30',array[0,1,2,3,4]::smallint[],3,400) returning id into spare_leg;
  update public.vehicles set seats_total=1 where driver_id=spare_driver;
  if (select seats_open from public.driver_legs where id=spare_leg)<>1 then raise exception 'FAIL replacement vehicle keeps excessive open seats';end if;checks:=checks+1;
  failed:=false;begin update public.vehicles set seats_total=7 where driver_id=spare_driver;exception when others then failed:=true;end;

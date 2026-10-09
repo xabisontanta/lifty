@@ -25,6 +25,15 @@ export async function shot(page: Page, name: string) {
   await page.screenshot({ path: `test-results-local/shots/${name}.png` })
 }
 
+/** The Auth service refuses a second code for the same number within a few seconds (a minute in production). Space the tests like a person would. */
+const lastCodeRequest = new Map<string, number>()
+export async function waitForCodeAllowance(p: { national: string }) {
+  const wait = (lastCodeRequest.get(p.national) ?? 0) + 5500 - Date.now()
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+}
+/** Call right after a code request has been sent: the service counts its quiet period from that moment. */
+export const markCodeRequested = (p: { national: string }) => void lastCodeRequest.set(p.national, Date.now())
+
 export async function startSignUp(page: Page, role: 'passenger' | 'driver', name: string, p: { national: string }) {
   await page.goto('/welcome')
   await page.getByRole('button', { name: 'Get Started' }).click()
@@ -33,7 +42,9 @@ export async function startSignUp(page: Page, role: 'passenger' | 'driver', name
   await page.getByLabel('Full name').fill(name)
   await page.getByLabel('Mobile number').fill(p.national)
   await page.getByRole('checkbox').check()
+  await waitForCodeAllowance(p)
   await page.getByRole('button', { name: 'Create Account' }).click()
+  markCodeRequested(p)
 }
 
 export async function enterCode(page: Page, code: string) {

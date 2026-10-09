@@ -5,6 +5,7 @@ import { Icon } from '@/components/ui/Icon'
 import { Banner, LiftyButton, ProgressStepper, Screen, ScreenBody, ScreenFooter, ScreenHeader, SecondaryButton, TextButton, TextField, useToast } from '@/components/ui/kit'
 import type { Role } from '@/domain/types'
 import { hasSupabase } from '@/lib/env'
+import { clearNotice, peekNotice } from '@/lib/notice'
 import { api, ApiError, getDataSource, isLive, setDataSource } from '@/services/api'
 import { useApp } from '@/store/app'
 
@@ -58,6 +59,7 @@ export function Welcome() {
         </div>
       </div>
       <ScreenFooter>
+        <SessionNotice />
         <LiftyButton onClick={() => nav('/role')}>Get Started</LiftyButton>
         <TextButton style={{ color: '#fff' }} onClick={() => nav('/signin')}>
           I already have an account · Sign In
@@ -126,8 +128,16 @@ function DemoFallback({ onDemo }: { onDemo: () => void }) {
   )
 }
 
+/** One-time explanation after the app had to sign the user out (e.g. an expired login), instead of a silent bounce to the welcome screen. */
+function SessionNotice() {
+  const [message] = useState(peekNotice)
+  useEffect(() => { if (message) clearNotice() }, [message])
+  if (!message) return null
+  return <Banner tone="info" icon="info">{message}</Banner>
+}
+
 /**
- * Demo mode is remembered per device. Without a visible reminder, someone who tapped "Use demo" once keeps
+ * Demo mode is a per-tab choice. Without a visible reminder, someone who tapped "Use demo" once keeps
  * "signing up" into a sandbox where nothing is saved and no real account is ever created.
  */
 function DemoModeNotice() {
@@ -214,6 +224,7 @@ export function SignUp() {
           <h1>Create your account</h1>
           <p>Let’s get you started on Lifty as a {state.role ?? 'passenger'}.</p>
         </div>
+        <SessionNotice />
         <DemoModeNotice />
         <form className="stack-4" onSubmit={(e) => { e.preventDefault(); void submit() }} noValidate>
           <TextField label="Full name" value={name} onChange={setName} autoComplete="name" placeholder="e.g. Ayesha Khan" valid={nameOk} error={touched && !nameOk ? 'Enter your first and last name.' : undefined} />
@@ -268,6 +279,7 @@ export function SignIn() {
           <h1>Welcome back</h1>
           <p>We’ll send a code to your mobile number.</p>
         </div>
+        <SessionNotice />
         <DemoModeNotice />
         <div className="stack-4">
           <TextField label="Mobile number" value={phone} onChange={setPhone} inputMode="tel" prefix="🇿🇦 +27" placeholder="82 123 4567" valid={digits.length === 9} />

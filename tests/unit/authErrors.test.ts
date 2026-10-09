@@ -52,6 +52,10 @@ describe('sign-up / sign-in error mapping', () => {
     expect(e.message).toMatch(/try again in a few minutes/)
   })
 
+  it('a rate limit that states the wait shows the real number of seconds', () => {
+    expect(run({ code: 'over_sms_send_rate_limit', message: 'For security purposes, you can only request this after 42 seconds.' }, 'sign-in').message).toBe('Please wait 42 seconds before asking for another code.')
+  })
+
   it('rate limits', () => {
     expect(run({ code: 'over_sms_send_rate_limit', message: 'SMS rate limit exceeded' }, 'sign-in').code).toBe('rate-limit')
     expect(run({ message: 'For security purposes, you can only request this after 42 seconds.' }, 'sign-up').code).toBe('rate-limit')

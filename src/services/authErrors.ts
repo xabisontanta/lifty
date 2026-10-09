@@ -9,8 +9,11 @@ export function authFail(e: { message?: string; code?: string } | null, step: 's
   const code = e?.code ?? ''
   if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new ApiError("You're offline. Check your connection and try again.", 'offline')
   if (step === 'verify' && (code === 'otp_expired' || /expired|invalid|incorrect/i.test(msg))) throw new ApiError('That code is wrong or has expired. Check it, or request a new one.', 'otp')
-  if (code === 'over_sms_send_rate_limit' || code === 'over_request_rate_limit' || /rate limit|too many|only request this after/i.test(msg))
-    throw new ApiError('Please wait a minute before asking for another code.', 'rate-limit')
+  if (code === 'over_sms_send_rate_limit' || code === 'over_request_rate_limit' || /rate limit|too many|only request this after/i.test(msg)) {
+    // the service says how long ("…you can only request this after 42 seconds") — tell the person the real number
+    const seconds = /after (\d+) seconds?/i.exec(msg)?.[1]
+    throw new ApiError(seconds ? `Please wait ${seconds} seconds before asking for another code.` : 'Please wait a minute before asking for another code.', 'rate-limit')
+  }
   // Signing in with a number that has no account: GoTrue says "signups not allowed for otp". That is not a configuration problem.
   if (step === 'sign-in' && (code === 'otp_disabled' || /signups not allowed/i.test(msg)))
     throw new ApiError('We couldn’t find a Lifty account for that number. Create an account first.', 'no-account')

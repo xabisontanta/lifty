@@ -2,12 +2,13 @@ import type { AccountSnapshot, LiftyApi } from './api'
 import { ApiError } from './api'
 import { sb, publicFileUrl } from './supabase'
 import { hueFor } from './liveApi'
+import { isSessionProblem } from './sessionErrors'
 import type { CommutePlan, Place, ScheduleException } from '@/domain/types'
 
 type J = any
 export async function pilotRpc(name: string, args?: Record<string, unknown>): Promise<J> {
  const {data,error}=await sb().rpc(name,args)
- if(error) throw new ApiError(error.message,'server')
+ if(error) throw new ApiError(error.message,isSessionProblem(error)?'auth':'server')
  return data
 }
 const at=(value?:string|null)=>value?new Date(value).getTime():undefined
