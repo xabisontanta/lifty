@@ -23,6 +23,7 @@ import {
 } from './api'
 import { publicFileUrl, sb, currentUserId } from './supabase'
 import { pilotMethods, pilotRpc } from './pilotApi'
+import { authFail } from './authErrors'
 import { reverseGeocode } from './mapbox'
 import { env } from '@/lib/env'
 import { holidayName } from '@/lib/holidays'
@@ -209,19 +210,19 @@ export const liveApi: LiftyApi = {
   async signUp({fullName,phone,role}) {
     const e164=toE164(phone)
     const {error}=await sb().auth.signInWithOtp({phone:e164,options:{channel:'sms',data:{full_name:fullName,role}}})
-    if(error) fail(error)
+    if(error) authFail(error,'sign-up')
     sessionStorage.setItem(PENDING_KEY,JSON.stringify({fullName,role,phone:e164}))
     return {resendInSeconds:30}
   },
   async sendOtp(phone) {
     const {error}=await sb().auth.signInWithOtp({phone:toE164(phone),options:{channel:'sms',shouldCreateUser:false}})
-    if(error)fail(error)
+    if(error)authFail(error,'sign-in')
     return {resendInSeconds:30}
   },
   async verifyOtp(phone,code) {
     const e164=toE164(phone)
     const {data,error}=await sb().auth.verifyOtp({phone:e164,token:code,type:'sms'})
-    if(error)fail(error)
+    if(error)authFail(error,'verify')
     if(!data.user)throw new ApiError('Could not sign in','auth')
     const {data:existing,error:profileError}=await sb().from('profiles').select('id').eq('id',data.user.id).maybeSingle()
     if(profileError)fail(profileError)

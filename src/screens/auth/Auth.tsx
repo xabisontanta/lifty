@@ -4,6 +4,7 @@ import { Logo } from '@/components/brand'
 import { Icon } from '@/components/ui/Icon'
 import { Banner, LiftyButton, ProgressStepper, Screen, ScreenBody, ScreenFooter, ScreenHeader, SecondaryButton, TextButton, TextField, useToast } from '@/components/ui/kit'
 import type { Role } from '@/domain/types'
+import { hasSupabase } from '@/lib/env'
 import { api, ApiError, getDataSource, isLive, setDataSource } from '@/services/api'
 import { useApp } from '@/store/app'
 
@@ -115,7 +116,7 @@ export function ChooseRole() {
   )
 }
 
-/** Shown when the live backend can't send SMS yet — keeps the user moving. */
+/** Shown only when the live backend has phone sign-in switched off — keeps the user moving. */
 function DemoFallback({ onDemo }: { onDemo: () => void }) {
   return (
     <Banner tone="warning" icon="info" action={<TextButton onClick={onDemo}>Use demo</TextButton>}>
@@ -123,6 +124,39 @@ function DemoFallback({ onDemo }: { onDemo: () => void }) {
       You can explore the full Lifty experience in demo mode meanwhile.
     </Banner>
   )
+}
+
+/**
+ * Demo mode is remembered per device. Without a visible reminder, someone who tapped "Use demo" once keeps
+ * "signing up" into a sandbox where nothing is saved and no real account is ever created.
+ */
+function DemoModeNotice() {
+  const { reset } = useApp()
+  if (!hasSupabase || getDataSource() !== 'demo') return null
+  return (
+    <Banner
+      tone="warning"
+      icon="info"
+      action={<TextButton onClick={() => { setDataSource('live'); reset(); window.location.assign('/welcome') }}>Use real accounts</TextButton>}
+    >
+      <strong>Demo mode is on</strong>
+      Nothing you enter is saved or sent. Switch to real accounts to sign up for real.
+    </Banner>
+  )
+}
+
+/** Error banner for the code-request screens; each failure gets the right wording and next step. */
+function AuthError({ err, onDemo, onCreate }: { err: Error; onDemo: () => void; onCreate?: () => void }) {
+  const code = err instanceof ApiError ? err.code : undefined
+  if (code === 'not-configured') return <DemoFallback onDemo={onDemo} />
+  if (code === 'no-account' && onCreate)
+    return (
+      <Banner tone="info" icon="info" action={<TextButton onClick={onCreate}>Create account</TextButton>}>
+        <strong>No account for this number</strong>
+        Create one first — it only takes a minute.
+      </Banner>
+    )
+  return <Banner tone="error">{err.message}</Banner>
 }
 
 const digitsOf = (phone: string) => phone.replace(/\D/g, '').replace(/^27/, '').replace(/^0/, '')
@@ -169,8 +203,6 @@ export function SignUp() {
     }
   }
 
-  const notConfigured = err instanceof ApiError && err.code === 'not-configured'
-
   return (
     <Screen>
       <ScreenHeader />
@@ -182,6 +214,7 @@ export function SignUp() {
           <h1>Create your account</h1>
           <p>Let’s get you started on Lifty as a {state.role ?? 'passenger'}.</p>
         </div>
+        <DemoModeNotice />
         <form className="stack-4" onSubmit={(e) => { e.preventDefault(); void submit() }} noValidate>
           <TextField label="Full name" value={name} onChange={setName} autoComplete="name" placeholder="e.g. Ayesha Khan" valid={nameOk} error={touched && !nameOk ? 'Enter your first and last name.' : undefined} />
           <TextField label="Mobile number" value={phone} onChange={setPhone} inputMode="tel" autoComplete="tel-national" prefix="🇿🇦 +27" placeholder="82 123 4567" valid={phoneOk} error={touched && !phoneOk ? 'Enter a valid 9-digit South African number.' : undefined} hint="We’ll send a 6-digit code to verify it. Your number is never shown to other members." />
@@ -192,7 +225,7 @@ export function SignUp() {
               {touched && !agree && <span className="field-error" role="alert"> Please accept to continue.</span>}
             </span>
           </label>
-          {err && (notConfigured ? <DemoFallback onDemo={() => { setDataSource('demo'); keepUser(); nav('/otp') }} /> : <Banner tone="error">{err.message}</Banner>)}
+          {err && <AuthError err={err} onDemo={() => { setDataSource('demo'); keepUser(); nav('/otp') }} />}
         </form>
       </ScreenBody>
       <ScreenFooter>
@@ -235,9 +268,10 @@ export function SignIn() {
           <h1>Welcome back</h1>
           <p>We’ll send a code to your mobile number.</p>
         </div>
+        <DemoModeNotice />
         <div className="stack-4">
           <TextField label="Mobile number" value={phone} onChange={setPhone} inputMode="tel" prefix="🇿🇦 +27" placeholder="82 123 4567" valid={digits.length === 9} />
-          {err && (err instanceof ApiError && err.code === 'not-configured' ? <DemoFallback onDemo={() => { setDataSource('demo'); update({ phone: prettyPhone(digits) }); nav('/otp', { state: { signIn: true } }) }} /> : <Banner tone="error">{err.message}</Banner>)}
+          {err && <AuthError err={err} onCreate={() => nav('/role')} onDemo={() => { setDataSource('demo'); update({ phone: prettyPhone(digits) }); nav('/otp', { state: { signIn: true } }) }} />}
         </div>
       </ScreenBody>
       <ScreenFooter>

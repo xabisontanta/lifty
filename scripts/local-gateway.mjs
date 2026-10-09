@@ -1,0 +1,64 @@
+// Local sandbox gateway. One URL for the app: it serves the REAL find-matches handler (supabase/functions/find-matches/handler.ts)
+// and proxies everything else — REST, Auth, Realtime websockets — to the local Supabase API.
+// (Docker on this machine can't mount the functions folder into Supabase's edge runtime, so Node runs the same code.)
+//   node scripts/local-gateway.mjs            (needs the sandbox up: node scripts/local-stack.mjs up)
+import http from 'node:http'
+import net from 'node:net'
+import { execSync } from 'node:child_process'
+import { createClient } from '@supabase/supabase-js'
+import { handle } from '../supabase/functions/find-matches/handler.ts'
+
+const STACK = process.env.LIFTY_STACK_DIR ?? '.local-stack'
+const PORT = Number(process.env.GATEWAY_PORT ?? 57330)
+
+export function stackEnv() {
+  const out = execSync(`npx --no-install supabase status --workdir ${STACK} -o env`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  return Object.fromEntries(out.split(/\r?\n/).filter((l) => l.includes('=')).map((l) => { const i = l.indexOf('='); return [l.slice(0, i), l.slice(i + 1).replace(/^"|"$/g, '')] }))
+}
+
+const s = stackEnv()
+const target = new URL(s.API_URL)
+const db = createClient(s.API_URL, s.SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+const mapboxSecret = process.env.MAPBOX_TOKEN || null
+
+const server = http.createServer(async (req, res) => {
+  try {
+    if (req.url?.startsWith('/functions/v1/find-matches')) {
+      const chunks = []
+      for await (const c of req) chunks.push(c)
+      const headers = new Headers()
+      for (const [k, v] of Object.entries(req.headers)) if (v != null) headers.set(k, Array.isArray(v) ? v.join(', ') : String(v))
+      const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.concat(chunks)
+      const response = await handle(new Request(`http://localhost${req.url}`, { method: req.method, headers, body }), { db, mapboxSecret, log: (m) => console.error('[find-matches]', m) })
+      res.writeHead(response.status, Object.fromEntries(response.headers))
+      res.end(Buffer.from(await response.arrayBuffer()))
+      return
+    }
+    const up = http.request({ hostname: target.hostname, port: target.port, path: req.url, method: req.method, headers: req.headers }, (pr) => {
+      res.writeHead(pr.statusCode ?? 502, pr.headers)
+      pr.pipe(res)
+    })
+    up.on('error', (e) => { res.writeHead(502); res.end(String(e)) })
+    req.pipe(up)
+  } catch (e) {
+    console.error('[gateway]', e)
+    if (!res.headersSent) res.writeHead(500)
+    res.end('gateway error')
+  }
+})
+
+// websockets (Realtime) pass straight through
+server.on('upgrade', (req, socket, head) => {
+  const up = net.connect(Number(target.port), target.hostname, () => {
+    up.write(`${req.method} ${req.url} HTTP/1.1\r\n${Object.entries(req.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\n\r\n`)
+    if (head?.length) up.write(head)
+    socket.pipe(up).pipe(socket)
+  })
+  up.on('error', () => socket.destroy())
+  socket.on('error', () => up.destroy())
+})
+
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`gateway on http://127.0.0.1:${PORT}  →  ${s.API_URL}  (find-matches served locally)`)
+  console.log(`VITE_SUPABASE_URL=http://127.0.0.1:${PORT}`)
+})

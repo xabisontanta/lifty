@@ -17,3 +17,7 @@ google-services.json
 *service-account*.json
 
 .vercel
+
+.local-stack
+test-results-local/
+playwright-report-local/

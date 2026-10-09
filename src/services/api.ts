@@ -250,8 +250,14 @@ export interface LiftyApi {
   suspendUser(userId: string, suspended: boolean, reason: string): Promise<void>
 }
 
+export type ApiErrorCode = 'offline' | 'server' | 'not-found' | 'invalid' | 'auth' | 'not-configured'
+  /** sign-in for a number with no account */ | 'no-account'
+  /** wrong / expired one-time code */ | 'otp'
+  /** too many code requests */ | 'rate-limit'
+  /** the SMS provider refused or failed to send */ | 'sms-failed'
+
 export class ApiError extends Error {
-  constructor(message: string, readonly code: 'offline' | 'server' | 'not-found' | 'invalid' | 'auth' | 'not-configured') {
+  constructor(message: string, readonly code: ApiErrorCode) {
     super(message)
   }
 }

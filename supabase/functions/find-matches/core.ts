@@ -55,6 +55,8 @@ export interface ScoredRun {
   /** leg signature for each returned match (stored with the quote, not sent to the phone) */
   signatures: Record<string, string>
   suggestions: string[]
+  /** why each candidate that did not make the list was dropped (hard filter or score) — for logs and debugging */
+  rejected: { id: string; reason: RejectReason }[]
   measuredCount: number
   candidateCount: number
 }
@@ -156,6 +158,7 @@ export async function scoreCandidates(data: CandidatesPayload, router: Router, l
     matches,
     signatures,
     suggestions: suggestionsFor([...rejected, ...run.rejected]),
+    rejected: [...rejected, ...run.rejected],
     measuredCount: measured.size,
     candidateCount: pool.length,
   }

@@ -44,6 +44,8 @@ export type Measured = Pick<Candidate, 'route' | 'walking'> & {
   walkPath: LatLng[]
 }
 
+/** How far apart two points can be and still legitimately snap to the same road/footpath position. */
+const SNAP_M = 150
 const toLatLngs = (c: [number, number][]): LatLng[] => c.map(([lng, lat]) => ({ lat, lng }))
 const validPoint = (p: LatLng) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180
 const validRoute = (r: RouteResult) => Number.isFinite(r.distanceM) && r.distanceM >= 0 && Number.isFinite(r.durationS) && r.durationS >= 0
@@ -59,7 +61,9 @@ export async function measure(input: RoutingInput, router: Router): Promise<Meas
   const drive = async (a: LatLng, b: LatLng): Promise<RouteResult> => {
     if (distanceM(a, b) < 1) return { coordinates: [[a.lng, a.lat], [b.lng, b.lat]], distanceM: 0, durationS: 0 }
     const route = await router.drive([a, b])
-    if (!validRoute(route) || route.distanceM <= 0 || route.durationS <= 0) throw new Error('No road route found between those places')
+    // Two points a few metres apart can snap to the same spot on the road: the provider then returns a valid ZERO-length route.
+    // That is normal (e.g. two geocodes of the same office) — only a zero-length route between distant points is bad data.
+    if (!validRoute(route) || ((route.distanceM <= 0 || route.durationS <= 0) && distanceM(a, b) > SNAP_M)) throw new Error('No road route found between those places')
     return route
   }
 
@@ -88,7 +92,8 @@ export async function measure(input: RoutingInput, router: Router): Promise<Meas
     walkPath = [input.passengerOrigin, p]
   } else {
     const w = await router.walk([input.passengerOrigin, p])
-    if (!validRoute(w) || w.distanceM <= 0 || w.durationS <= 0) throw new Error('No pedestrian route found to that pickup')
+    // a pickup a few metres from the passenger can snap to the same footpath point: a zero-length walk, not a failure
+    if (!validRoute(w) || ((w.distanceM <= 0 || w.durationS <= 0) && distanceM(input.passengerOrigin, p) > SNAP_M)) throw new Error('No pedestrian route found to that pickup')
     walking = { distanceM: w.distanceM, durationS: w.durationS }
     walkPath = toLatLngs(w.coordinates)
   }
