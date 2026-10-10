@@ -2,12 +2,14 @@ import pg from 'pg'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
+import { assertTestDatabase } from './test-database-target.mjs'
 
 const connectionString = process.env.LIFTY_TEST_DATABASE_URL
 if (!connectionString) {
-  console.error('Set LIFTY_TEST_DATABASE_URL to an authorized PostgreSQL test connection. No database was changed.')
+  console.error('Set LIFTY_TEST_DATABASE_URL to the local Lifty sandbox on port 57322. No database was changed.')
   process.exit(1)
 }
+assertTestDatabase(connectionString)
 
 const owner = new pg.Client({ connectionString, application_name: 'lifty-race-fixture' })
 const racers = [0, 1].map(index => new pg.Client({ connectionString, application_name: `lifty-race-${index}` }))

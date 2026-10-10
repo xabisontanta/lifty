@@ -21,3 +21,7 @@ google-services.json
 .local-stack
 test-results-local/
 playwright-report-local/
+test-results-map/
+test-results-usability/
+test-results-local-usability/
+playwright-report-map/

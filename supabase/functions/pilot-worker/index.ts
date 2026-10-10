@@ -34,6 +34,7 @@ Deno.serve(async request=>{
     if(!ready)throw new Error('Firebase not configured')
     bearer??=await accessToken(firebase!)
     for(const destination of job.tokens??[]){
+     if(!await rpc('can_dispatch_push',{p_id:job.id,p_lease:job.lease,p_hash:destination.hash}))continue
      const response=await fetch(`https://fcm.googleapis.com/v1/projects/${firebase!.project_id}/messages:send`,{method:'POST',headers:{Authorization:`Bearer ${bearer}`,'Content-Type':'application/json'},body:JSON.stringify({message:{token:destination.token,notification:{title:job.title,body:job.body},data:{link:job.link??'/','notificationId':job.id},android:{priority:'high',ttl:'86400s',notification:{tag:job.id}}}}),signal:AbortSignal.timeout(15000)})
      const result=await response.json()
      if(!response.ok){

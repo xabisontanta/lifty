@@ -27,7 +27,7 @@ export interface Db {
 
 export interface Deps {
   db: Db
-  /** Server-held Mapbox token (the MAPBOX_TOKEN secret). Without it the app's public pk. maps token is used. */
+  /** Server-held Mapbox token (the MAPBOX_TOKEN secret). Client input never chooses routing credentials. */
   mapboxSecret: string | null
   /** Test seam: replaces the Mapbox router entirely. */
   router?: Router
@@ -69,24 +69,22 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   const user = jwt ? (await db.auth.getUser(jwt)).data.user : null
   if (!user) return json({ error: 'Sign in to find lift clubs', code: 'auth' }, 401)
 
-  let body: { commuteId?: unknown; mapboxToken?: unknown }
+  let body: unknown
   try {
     body = await req.json()
   } catch {
     return json({ error: 'Invalid request' }, 400)
   }
-  const commuteId = typeof body.commuteId === 'string' && /^[0-9a-f-]{36}$/i.test(body.commuteId) ? body.commuteId : null
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return json({ error: 'Invalid request' }, 400)
+  const value = (body as { commuteId?: unknown }).commuteId
+  const commuteId = typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : null
   if (!commuteId) return json({ error: 'Invalid request' }, 400)
 
   const authorization = await db.rpc('authorize_match_search', { p_commute: commuteId, p_passenger: user.id })
   if (authorization.error) return json({ error: 'Commute not found or account not active', code: 'candidates' }, 404)
   if (!authorization.data) return json({ error: 'Please wait before searching again', code: 'rate-limit' }, 429)
 
-  // A server secret (MAPBOX_TOKEN) wins. Without it, the app's public pk. maps token — already shipped in the
-  // app bundle — is used. Coordinates always come from the database, so a client-supplied token can only affect
-  // that client's own search (and searches are rate-limited above).
-  const clientToken = typeof body.mapboxToken === 'string' && /^pk\.[\w.-]+$/.test(body.mapboxToken) ? body.mapboxToken : null
-  const token = deps.mapboxSecret || clientToken
+  const token = deps.mapboxSecret
   const router = deps.router ?? (token ? mapboxRouter(token, req.headers.get('Origin'), deps.fetch) : null)
   if (!router) return json({ error: 'Road routing is not configured', code: 'routing-unavailable' }, 503)
 

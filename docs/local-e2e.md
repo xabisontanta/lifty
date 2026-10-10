@@ -1,27 +1,99 @@
-# Local end-to-end sandbox
+# Local backend testing and staging preparation
 
-A throwaway Supabase in Docker, built from the **real** migrations and seeds, so sign-up, sign-in, search and booking can be tested end to end without SMS and without touching the live project.
+## Targets and safety
 
-## What it is
-- `supabase/local-e2e/config.toml` — sandbox config (ports 573xx so it never clashes with other local databases). Phone sign-in is on; the numbers under `[auth.sms.test_otp]` are **fake** and their fixed codes are the only way in — no SMS is ever sent.
-  The dummy `[auth.sms.twilio]` block exists only because the CLI switches the phone provider on when an SMS provider is enabled; test numbers never reach it.
-- `scripts/local-stack.mjs` — stages `.local-stack/` (git-ignored) from `supabase/migrations`, `seed.sql` + `seed-demo-lifts.sql` and the config, then starts/stops it.
-- `scripts/local-gateway.mjs` — one URL for the app (`http://127.0.0.1:57330`): serves the **real** `find-matches` handler and proxies everything else (REST, Auth, Realtime) to the sandbox. Docker here cannot mount the functions folder into Supabase's edge runtime, so Node runs the same code.
-- `tests/e2e-local/` + `playwright.local.config.ts` — phone-sized (390×844) browser tests.
+All included fixture, simulator and database tools target the fixed Docker container `supabase_db_lifty-e2e`, database port **57322**. The gateway is **57330**, Supabase API **57321**, and the test app **5180**. Arbitrary directories, non-loopback targets and other local databases are rejected.
 
-## Run it
+The stack stages canonical migrations and the replacement test seed in ignored `.local-stack/`. It disables local cron jobs so the fixture environment cannot invoke hosted workers. These instructions do not change the hosted project.
+
+## Start and view
+
+Install with `npm ci`; run Docker. Put the public Mapbox token in ignored `.env` as `VITE_MAPBOX_TOKEN`, or give the local gateway a server `MAPBOX_TOKEN`. Matching uses the same real handler as the Edge Function; the gateway loads its routing token server-side.
+
+Run in separate terminals:
+
+```text
+npm run stack:up
+npm run stack:gateway
+npm run test:simulation
+npm run dev:local
 ```
-npm run stack:up          # first run pulls images; a minute or two
-npm run stack:gateway     # leave this running (second terminal)
-npm run test:e2e:local    # starts Vite on :5180 pointed at the sandbox
-npm run stack:down
+
+Open http://127.0.0.1:5180. The app connects to the local backend. Sign up with a fake passenger number listed under `auth.sms.test_otp` in `supabase/local-e2e/config.toml`, using its fixed code. These identities never send SMS. See the config for all driver phone identities; use `npm run test:drivers -- list` for fixture UUIDs. Driver accounts already exist: use **Sign in**.
+
+The test drivers have fictional names, vehicles and completed trip reviews. Every profile/card carries a Test driver label. Routes cover Salt Rock, Ballito, Umhlali, Sheffield, Shaka's Rock, Umhlanga, Durban and King Shaka Airport. Seeded routes were measured with Mapbox; current matching remeasures walking and driver detours.
+
+For a covered example, choose Salt Rock Main Road → Umhlanga Ridge, weekdays, 750 m maximum walking and arrival window 07:30–08:00. Partial drivers cover explicitly labelled subsets. Ballito also has coverage. A remote area and an arrival-after-08:00 driver are negative cases; filters are not relaxed to manufacture matches.
+
+## Requests and trips
+
+Automatic drivers respond after the configured delay while `test:simulation` runs. To exercise a human driver response, set a fixture to manual and sign in with its local driver identity:
+
+```text
+npm run test:simulation -- manual <test-driver-uuid>
+npm run test:simulation -- automatic <test-driver-uuid>
+npm run test:simulation -- decline <test-driver-uuid> 100
 ```
-Needs Docker, and `VITE_MAPBOX_TOKEN` in `.env` (address search and routing are real).
 
-## What the tests cover
-Sign up with a texted code → onboarding → search returns real road-measured lifts (saved as quotes) → request to join (stored as `pending` with the road figures) → sign out → sign back in (the pending request survives). Also: sign-in with a number that has no account, a wrong code, driver sign-up, and the demo-mode notice.
+Decline accepts a percentage from 0 to 100. Default automatic settings use a 5-second delay with no forced decline.
 
-`node scripts/check-demo-coverage.mjs` (sandbox up, after one e2e run) checks that realistic searches return lifts in KZN, Gauteng and the Western Cape through the real pipeline, and that an uncovered area returns nothing.
+After acceptance, start a labelled test trip using its real request UUID:
 
-## Never against the live project
-The tests delete and recreate their fake users (`delete from auth.users where phone in (…)`) — only ever in the sandbox container `supabase_db_lifty-e2e`.
+```text
+npm run test:simulation -- start-trip <accepted-test-request-uuid> 90
+```
+
+Duration accepts 30–3600 seconds. The server moves the driver, publishes through authorized participant channels, changes arrival/collection state and completes the trip through normal APIs. It stops publishing on completion. A driver set to **manual** is left entirely to the person driving: the server neither answers requests nor moves, arrives or collects for them, so the driver account’s own taps (arrived, collected, finish) are the only thing that moves the trip. Only automatic drivers are driven by the simulator. Ratings require the completed instance and actual participant.
+
+## Reproducible checks
+
+Stop `dev:local` first; browser tests start their own app on 5180.
+
+```text
+npm run check
+npm run test:browser
+npm run test:e2e:local
+npm run test:coverage
+npm run test:isolation
+npm run test:lifecycle
+npm run check:secrets
+```
+
+Map-specific tests use `npx playwright test -c playwright.map.config.ts`. Each suite owns its server; avoid duplicate suite runs on the same port. Reports/traces are ignored because they may contain local sessions. Only reviewed PNG screenshots go into `docs/review/`.
+
+`npm run test:e2e:local` needs the sandbox and `npm run stack:gateway` running, but **not** a separately started simulator: the long journey test starts its own simulator process (its log is kept in `test-results-local/simulator.log`) and fixture drivers answer on their own only where a test wants that. Tests that inspect a *pending* request put the fixture drivers on manual first and restore their settings afterwards. A simulator you started yourself is harmless but unnecessary, and it will answer requests during a test run that you expected to stay pending, so stop it first.
+
+The suite can be run repeatedly: each file removes the accounts earlier runs left on the three reserved fake numbers and gives back the seats their memberships held (a plain `delete from auth.users` does not restore a driver's seat counter, and fixture drivers would vanish from results run after run). If a fixture driver is missing from results anyway, rebuild the sandbox from scratch with `npm run stack:down` then `npm run stack:up`.
+
+The sandbox raises Auth's hourly SMS cap (`sms_sent`) because one full run requests about 20 codes; the per-number gap between codes is unchanged and is what the "second code straight away" test exercises.
+
+Isolation/lifecycle assertions are rollback-only. Coverage checks use temporary searches and roll back. The original pilot database suite and concurrency check require a local URL:
+
+```powershell
+$env:LIFTY_TEST_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:57322/postgres'
+npm run test:db
+npm run test:race
+Remove-Item Env:LIFTY_TEST_DATABASE_URL
+```
+
+Run `npm run types:local` after schema changes. It verifies its local target and does not query a hosted project.
+
+## Cleanup and reseed
+
+Stop the simulator and browser suites before cleanup. The tool verifies the fixed container and local mode, requires explicit confirmation and deletes only test-labelled fixture IDs and pickup rows.
+
+```text
+npm run test:drivers -- cleanup --confirm-lifty-e2e
+npm run test:drivers -- seed
+```
+
+No normal account is part of fixture cleanup. Do not execute either legacy cleanup or replacement cleanup in a hosted project. Legacy `remove-demo-lifts.sql` now refuses execution.
+
+## Staging proposal — not applied
+
+Prepare a separate non-production Supabase target and reconcile its migrations before applying the isolation migration. Its default mode is disabled; no fixture is visible. Stage only reviewed migration/seed SQL against the explicitly identified staging target. Server credentials and routing keys stay in backend secrets.
+
+A backend operator must set `lifty_private.test_environment.mode` to `staging` and put designated authenticated user UUIDs in `lifty_private.testers`. Unlisted users cannot search, view, request or receive test locations; the client cannot grant itself access. The simulator functions require service-role access and enabled test mode. They are not browser endpoints.
+
+The local policy suite exercises disabled, local and staging-allowlist modes against actual Postgres. No remote staging environment was provisioned or verified in this request. Do not enable test visibility on the production project.
+

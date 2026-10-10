@@ -1,4 +1,4 @@
--- Removes ALL demo / mock accounts (every profile flagged is_demo): the original demo drivers and passenger plus every mock lift
--- added by seed-demo-lifts.sql, together with their vehicles, documents, routes, and any requests or saved quotes that real
--- passengers made against them. Real accounts are never touched. Run it before real launch (it contains DELETEs on purpose).
-delete from auth.users where id in (select id from public.profiles where is_demo);
+-- Deprecated. This old cleanup filename must never delete shared or production data.
+-- Review supabase/remove-test-drivers-local.sql and use the fixed local runner:
+-- node scripts/test-driver-tools.mjs cleanup --confirm-lifty-e2e
+DO $$ BEGIN RAISE EXCEPTION 'remove-demo-lifts.sql is disabled. Use the confirmed local test-driver cleanup runner.'; END $$;

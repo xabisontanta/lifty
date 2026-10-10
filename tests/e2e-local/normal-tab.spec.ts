@@ -147,9 +147,12 @@ test('asking for a second code straight away explains the wait instead of failin
   markCodeRequested(PASSENGER)
   await expect(page.getByText('Verify your number')).toBeVisible()
   await ask() // straight away — deliberately not spaced
-  await expect(page.getByText(/Please wait \d+ seconds before asking for another code/)).toBeVisible()
+  const notice = page.getByText(/Please wait \d+ seconds? before asking for another code/)
+  await expect(notice).toBeVisible()
   await shot(page, '24-rate-limited')
-  await waitForCodeAllowance(PASSENGER) // …and it works again once the wait is over
+  // …and it works again once the wait the screen announced is over (plus a margin: the service rounds the remainder down)
+  const announced = Number(/(\d+)/.exec((await notice.textContent()) ?? '')?.[1] ?? 5)
+  await page.waitForTimeout((announced + 1.5) * 1000)
   await page.getByRole('button', { name: 'Send code' }).click()
   await expect(page.getByText('Verify your number')).toBeVisible()
 })

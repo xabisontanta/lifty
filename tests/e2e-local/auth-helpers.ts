@@ -19,6 +19,6 @@ export async function signInViaUi(page: Page, p: { national: string; code: strin
   await waitForCodeAllowance(p)
   await page.getByRole('button', { name: 'Send code' }).click()
   markCodeRequested(p)
-  await page.getByText('Verify your number').waitFor()
+  await page.getByText('Verify your number').waitFor({ timeout: 30_000 }) // bounded: a refused code request must fail here, not hang the test
   await enterCode(page, p.code)
 }

@@ -1,6 +1,9 @@
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Page } from '@playwright/test'
+import {assertLocalContainer, sandboxSql} from '../../scripts/sandbox-safety.mjs'
 
 /**
  * The sandbox's fake phone numbers and their fixed one-time code come from supabase/local-e2e/config.toml ([auth.sms.test_otp]).
@@ -15,24 +18,72 @@ export const WRONG_CODE = '000000'
 const DB = process.env.LIFTY_E2E_DB_CONTAINER ?? 'supabase_db_lifty-e2e'
 /** Run SQL in the sandbox database (never the live project). */
 export function sql(query: string): string {
-  return execFileSync('docker', ['exec', '-i', DB, 'psql', '-U', 'postgres', '-At', '-c', query], { encoding: 'utf8' }).trim()
+  assertLocalContainer(DB)
+  return sandboxSql(query)
 }
-export const resetTestUsers = () => sql(`delete from auth.users where phone in (${pairs.map((p) => `'${p.digits}'`).join(',')})`)
+/**
+ * Remove whatever accounts earlier runs left on the three reserved fake numbers (they exist only in this sandbox). The names
+ * the tests sign up with differ from test to test, so the NUMBER decides — a name filter left two accounts behind and broke
+ * the next run. Seats held by their memberships are handed back first, exactly as the real erasure path
+ * (finalize_account_deletion) does: a plain delete leaves the drivers' seat counters short, and run after run fixture drivers
+ * would vanish from results.
+ */
+const reservedPhones = pairs.slice(0, 3).map((p) => `'${p.digits}'`).join(',')
+export const resetTestUsers = () => sql(`
+  update public.driver_legs l set seats_open = l.seats_open + m.n
+    from (select cm.leg_id, count(*) n from public.club_members cm join auth.users u on u.id = cm.passenger_id
+          where cm.active and u.phone in (${reservedPhones}) group by cm.leg_id) m
+    where l.id = m.leg_id;
+  delete from auth.users where phone in (${reservedPhones});
+`)
 export const userId = (p: { digits: string }) => sql(`select id from auth.users where phone = '${p.digits}'`)
+
+/**
+ * Fixture drivers answer requests by themselves (after a short delay) while the simulator runs. A test that wants to look at a
+ * PENDING request holds them first and puts them back exactly as they were afterwards.
+ */
+let heldSettings: string | null = null
+export function holdTestDriverResponses() {
+  heldSettings = sql(`select coalesce(jsonb_object_agg(driver_id, auto_respond), '{}') from lifty_private.test_driver_settings`)
+  sql('update lifty_private.test_driver_settings set auto_respond = false')
+}
+export function releaseTestDriverResponses() {
+  if (heldSettings == null) return
+  sql(`update lifty_private.test_driver_settings s set auto_respond = v.value::boolean from jsonb_each_text('${heldSettings}'::jsonb) v where s.driver_id = v.key::uuid`)
+  heldSettings = null
+}
+
+/**
+ * Run the fixture simulator (answers, trips, live positions) for the length of a test, so no separately started simulator is
+ * needed. It is its own process, like the one an operator starts: ticking from inside the test would block the test's event
+ * loop (every sql() call runs several Docker commands) and make the browser steps crawl.
+ */
+export function startSimulationTicker() {
+  mkdirSync('test-results-local', { recursive: true })
+  const log = openSync('test-results-local/simulator.log', 'a') // kept, so a silent simulator can be explained afterwards
+  const child = spawn(process.execPath, ['scripts/test-driver-simulator.mjs', 'run'], { stdio: ['ignore', log, log] })
+  return () => { child.kill(); closeSync(log) }
+}
 
 export async function shot(page: Page, name: string) {
   mkdirSync('test-results-local/shots', { recursive: true })
   await page.screenshot({ path: `test-results-local/shots/${name}.png` })
 }
 
-/** The Auth service refuses a second code for the same number within a few seconds (a minute in production). Space the tests like a person would. */
-const lastCodeRequest = new Map<string, number>()
+/**
+ * The Auth service refuses a second code for the same number within a few seconds (a minute in production). Space the tests like
+ * a person would. The times are kept in a file, not in memory: Playwright starts a fresh worker after any failed test, and a
+ * worker that forgets would ask too soon and fail for a reason that has nothing to do with the app.
+ */
+const stamps = join(tmpdir(), 'lifty-e2e-last-code-request.json')
+const readStamps = (): Record<string, number> => { try { return JSON.parse(readFileSync(stamps, 'utf8')) } catch { return {} } }
 export async function waitForCodeAllowance(p: { national: string }) {
-  const wait = (lastCodeRequest.get(p.national) ?? 0) + 5500 - Date.now()
+  // 5 s quiet period in the sandbox + the time the request took to reach the service + a margin
+  const wait = (readStamps()[p.national] ?? 0) + 6500 - Date.now()
   if (wait > 0) await new Promise((r) => setTimeout(r, wait))
 }
 /** Call right after a code request has been sent: the service counts its quiet period from that moment. */
-export const markCodeRequested = (p: { national: string }) => void lastCodeRequest.set(p.national, Date.now())
+export const markCodeRequested = (p: { national: string }) => writeFileSync(stamps, JSON.stringify({ ...readStamps(), [p.national]: Date.now() }))
 
 export async function startSignUp(page: Page, role: 'passenger' | 'driver', name: string, p: { national: string }) {
   await page.goto('/welcome')

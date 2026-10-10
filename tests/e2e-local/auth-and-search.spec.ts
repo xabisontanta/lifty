@@ -1,11 +1,14 @@
 import { expect, test } from '@playwright/test'
-import { DRIVER, NEWBIE, PASSENGER, WRONG_CODE, enterCode, pickAddress, resetTestUsers, shot, sql, startSignUp, userId } from './helpers'
+import { DRIVER, NEWBIE, PASSENGER, WRONG_CODE, enterCode, holdTestDriverResponses, pickAddress, releaseTestDriverResponses, resetTestUsers, shot, sql, startSignUp, userId } from './helpers'
 
 test.beforeAll(() => {
   resetTestUsers() // sandbox only
+  holdTestDriverResponses() // the request in the first test must stay pending while it is checked
 })
+test.afterAll(() => releaseTestDriverResponses())
 
 test('passenger journey: sign up → onboard → search → request a lift → sign out → sign back in', async ({ page }) => {
+  test.setTimeout(240_000) // real address search, a 60 s road-matching allowance and several map screens (each may wait out the 8 s map fallback)
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
 
@@ -41,11 +44,11 @@ test('passenger journey: sign up → onboard → search → request a lift → s
     await page.getByRole('button', { name: 'Find Lift Clubs' }).click()
     await expect(page.getByText('Available Lift Clubs')).toBeVisible({ timeout: 60_000 })
     const cards = page.getByRole('button', { name: /View match with/ })
-    expect(await cards.count()).toBeGreaterThanOrEqual(3)
+    expect(await cards.count()).toBeGreaterThanOrEqual(2) // the Ballito → Umhlanga corridor is covered by two fixture drivers
     await shot(page, '04-results')
     // what the database stored is what was shown
     const id = userId(PASSENGER)
-    expect(Number(sql(`select count(*) from public.match_quotes where passenger_id = '${id}'`))).toBeGreaterThanOrEqual(3)
+    expect(Number(sql(`select count(*) from public.match_quotes where passenger_id = '${id}'`))).toBeGreaterThanOrEqual(2)
     expect(sql(`select count(distinct match->>'routing') from public.match_quotes where passenger_id = '${id}'`)).toBe('1')
     expect(sql(`select distinct match->>'routing' from public.match_quotes where passenger_id = '${id}'`)).toBe('road')
   })
@@ -107,16 +110,11 @@ test('a wrong code is rejected with a clear message, then the right code works (
   expect(sql(`select p.role from public.profiles p join auth.users u on u.id = p.id where u.phone = '${DRIVER.digits}'`)).toBe('driver')
 })
 
-test('a device left in demo mode is told so, and can switch to real accounts', async ({ page }) => {
-  await page.addInitScript(() => {
-    if (sessionStorage.getItem('seeded')) return // only on the first load, so the switch to live sticks
-    sessionStorage.setItem('seeded', '1')
-    sessionStorage.setItem('lifty.source', 'demo')
-  })
+test('an old demo choice cannot divert a local backend account into fake authentication', async ({ page }) => {
+  await page.addInitScript(() => { sessionStorage.setItem('lifty.source', 'demo');localStorage.setItem('lifty.source','demo') })
   await page.goto('/signin')
-  await expect(page.getByText('Demo mode is on')).toBeVisible()
-  await shot(page, '12-demo-notice')
-  await page.getByRole('button', { name: 'Use real accounts' }).click()
-  await expect(page).toHaveURL(/\/welcome/)
-  expect(await page.evaluate(() => sessionStorage.getItem('lifty.source'))).toBeNull()
+  await expect(page.getByText('Demo mode is on')).toHaveCount(0)
+  await expect(page.getByRole('button',{name:/Use demo|Switch to demo/})).toHaveCount(0)
+  expect(await page.evaluate(() => [sessionStorage.getItem('lifty.source'),localStorage.getItem('lifty.source')])).toEqual([null,null])
+  await shot(page, '12-real-account-signin')
 })

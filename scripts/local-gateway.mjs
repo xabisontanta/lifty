@@ -7,25 +7,34 @@ import net from 'node:net'
 import { execSync } from 'node:child_process'
 import { createClient } from '@supabase/supabase-js'
 import { handle } from '../supabase/functions/find-matches/handler.ts'
+import { existsSync, readFileSync } from 'node:fs'
+import { assertLocalContainer, assertLoopbackUrl, sandboxDirectory } from './sandbox-safety.mjs'
 
-const STACK = process.env.LIFTY_STACK_DIR ?? '.local-stack'
-const PORT = Number(process.env.GATEWAY_PORT ?? 57330)
+assertLocalContainer()
+sandboxDirectory()
+const PORT = 57330
 
 export function stackEnv() {
-  const out = execSync(`npx --no-install supabase status --workdir ${STACK} -o env`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  const out = execSync('npx --no-install supabase status --workdir .local-stack -o env', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   return Object.fromEntries(out.split(/\r?\n/).filter((l) => l.includes('=')).map((l) => { const i = l.indexOf('='); return [l.slice(0, i), l.slice(i + 1).replace(/^"|"$/g, '')] }))
 }
 
 const s = stackEnv()
-const target = new URL(s.API_URL)
+const target = assertLoopbackUrl(s.API_URL)
+if (target.port !== '57321') throw new Error('Sandbox gateway only proxies the fixed local API on port 57321.')
 const db = createClient(s.API_URL, s.SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
-const mapboxSecret = process.env.MAPBOX_TOKEN || null
+// This server-only local fallback never returns a token to the browser. Staging
+// and production Edge Functions require their own MAPBOX_TOKEN secret.
+const localMapToken = existsSync('.env') ? readFileSync('.env', 'utf8').split(/\r?\n/).find(line => line.startsWith('VITE_MAPBOX_TOKEN='))?.slice('VITE_MAPBOX_TOKEN='.length).trim() : null
+const mapboxSecret = process.env.MAPBOX_TOKEN || localMapToken || null
+if (!mapboxSecret) throw new Error('Configure MAPBOX_TOKEN for road-based sandbox searches.')
 
 const server = http.createServer(async (req, res) => {
   try {
     if (req.url?.startsWith('/functions/v1/find-matches')) {
       const chunks = []
-      for await (const c of req) chunks.push(c)
+      let bytes = 0
+      for await (const c of req) { bytes += c.length; if (bytes > 1_000_000) { res.writeHead(413); res.end('request too large'); return }; chunks.push(c) }
       const headers = new Headers()
       for (const [k, v] of Object.entries(req.headers)) if (v != null) headers.set(k, Array.isArray(v) ? v.join(', ') : String(v))
       const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.concat(chunks)

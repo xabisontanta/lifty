@@ -70,6 +70,9 @@ describe('find-matches handler — access and abuse protection', () => {
     const f = fakeDb()
     expect((await handle(post({ commuteId: 'not-a-uuid' }), deps(f))).status).toBe(400)
     expect((await handle(post({}), deps(f))).status).toBe(400)
+    expect((await handle(post(null), deps(f))).status).toBe(400)
+    expect((await handle(post([]), deps(f))).status).toBe(400)
+    expect((await handle(post({ commuteId: '-'.repeat(36) }), deps(f))).status).toBe(400)
     expect(f.calls).toHaveLength(0)
   })
 
@@ -149,10 +152,12 @@ describe('find-matches handler — Mapbox token handling', () => {
     expect(urls(spy).every((u) => u.includes('access_token=sk.server'))).toBe(true)
   })
 
-  it('falls back to the app’s public pk. token when no secret is configured', async () => {
+  it('ignores a client token and reports missing server configuration before routing', async () => {
     const spy = vi.fn(async () => okRoute as unknown as Response)
-    await handle(post({ commuteId: COMMUTE, mapboxToken: 'pk.fromapp' }), { db: fakeDb().db, mapboxSecret: null, fetch: spy as unknown as typeof fetch })
-    expect(urls(spy).every((u) => u.includes('access_token=pk.fromapp'))).toBe(true)
+    const res = await handle(post({ commuteId: COMMUTE, mapboxToken: 'pk.fromapp' }), { db: fakeDb().db, mapboxSecret: null, fetch: spy as unknown as typeof fetch })
+    expect(res.status).toBe(503)
+    expect((await res.json()).code).toBe('routing-unavailable')
+    expect(spy).not.toHaveBeenCalled()
   })
 
   it('refuses a client-supplied token that is not a public pk. token', async () => {

@@ -35,10 +35,13 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'npx vite --host 127.0.0.1 --port 5180 --strictPort',
+    // The production bundle, not the dev server: a dev server answers every page load with hundreds of module requests, which on a
+    // busy machine made the long journeys slow enough to time out (and the bundle is what users actually get). The build embeds the
+    // sandbox address and anon key given in `env`.
+    command: 'npx vite build --outDir .local-stack/e2e-app --emptyOutDir && npx vite preview --host 127.0.0.1 --port 5180 --strictPort --outDir .local-stack/e2e-app',
     url: 'http://127.0.0.1:5180',
     reuseExistingServer: false,
-    timeout: 120_000,
+    timeout: 300_000,
     env: { VITE_SUPABASE_URL: gateway, VITE_SUPABASE_ANON_KEY: stack.ANON_KEY },
   },
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report-local' }]],

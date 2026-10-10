@@ -199,7 +199,9 @@ password_requirements = ""
 # Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled.
 email_sent = 2
 # Number of SMS messages that can be sent per hour. Requires auth.sms to be enabled.
-sms_sent = 30
+# Sandbox only (no SMS is ever sent): one full end-to-end run requests about 20 codes, so the production-style hourly cap of 30
+# would make a second run within the hour fail for reasons unrelated to the app. The per-number gap (max_frequency) is unchanged.
+sms_sent = 500
 # Number of anonymous sign-ins that can be made per hour per IP address. Requires enable_anonymous_sign_ins = true.
 anonymous_users = 30
 # Number of sessions that can be refreshed in a 5 minute interval per IP address.
@@ -270,6 +272,26 @@ max_frequency = "5s"
 27820000001 = "123456"
 27820000002 = "123456"
 27820000003 = "123456"
+27820000101 = "123456"
+27820000102 = "123456"
+27820000103 = "123456"
+27820000104 = "123456"
+27820000105 = "123456"
+27820000106 = "123456"
+27820000107 = "123456"
+27820000108 = "123456"
+27820000109 = "123456"
+27820000110 = "123456"
+27820000111 = "123456"
+27820000112 = "123456"
+27820000113 = "123456"
+27820000114 = "123456"
+27820000115 = "123456"
+27820000116 = "123456"
+27820000117 = "123456"
+27820000118 = "123456"
+27820000119 = "123456"
+27820000120 = "123456"
 
 # Configure logged in session timeouts.
 # [auth.sessions]

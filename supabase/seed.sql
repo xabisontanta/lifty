@@ -1,3 +1,5 @@
+-- Legacy fixtures: local sandbox only. Production default test visibility is disabled.
+do $$ begin if current_setting('lifty.nonproduction_seed',true) is distinct from 'LOCAL_LIFTY_ONLY' then raise exception 'Use the fixed local sandbox seed runner';end if;end $$;
 -- Demo data (is_demo = true) so matching can be exercised before real drivers sign up.
 insert into public.pickup_points (name, area, location, kind) values
   ('Ballito Drive (town centre)', 'Ballito', extensions.st_setsrid(extensions.st_makepoint(31.211652, -29.535325), 4326)::extensions.geography, 'community'),

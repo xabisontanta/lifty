@@ -1,7 +1,9 @@
 import pg from 'pg'
 import {readFileSync} from 'node:fs'
+import { assertTestDatabase } from './test-database-target.mjs'
 const connectionString=process.env.LIFTY_TEST_DATABASE_URL
-if(!connectionString){console.error('Set LIFTY_TEST_DATABASE_URL to an authorized PostgreSQL connection. No database was changed.');process.exit(1)}
+if(!connectionString){console.error('Set LIFTY_TEST_DATABASE_URL to the local Lifty sandbox on port 57322. No database was changed.');process.exit(1)}
+assertTestDatabase(connectionString)
 const client=new pg.Client({connectionString})
 try {
   await client.connect()
