@@ -6,6 +6,7 @@ import { vehicleImage } from '@/data/mock'
 import { env, hasMapbox } from '@/lib/env'
 import { reversePlace, searchPlaces, type PlaceSuggestion } from '@/services/mapbox'
 import { getCurrentPosition } from '@/services/location'
+import { validCoordinate } from '@/lib/mapLocation'
 import { MapPicker } from '@/components/map/MapPicker'
 import { openNavigation } from '@/services/navigation'
 import { reportError } from '@/services/monitoring'
@@ -72,6 +73,7 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
   }, [text, open, near?.lat, near?.lng, places])
 
   const commit = (p: Place, source: NonNullable<Place['source']> = 'manual') => {
+    if (!validCoordinate(p.location)) { setErr('This address has no valid map position. Choose another address or enter coordinates.'); return }
     picked.current = true
     setText(p.label)
     setOpen(false)
@@ -89,6 +91,7 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
       const at = { lat: fix.lat, lng: fix.lng }
       const a = await reversePlace(at)
       commit({ label: a.label, area: a.area, location: at }, 'current_location')
+      if (fix.accuracyM != null && fix.accuracyM > 50) setErr(`Your location is accurate to about ${Math.round(fix.accuracyM)} m. Check this spot on the map before continuing.`)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Location unavailable')
     } finally {
@@ -150,6 +153,7 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
       )}
       {dirty && !open && !err && <p className="field-error" role="alert">Pick an address from the list, use your location, or choose it on the map — otherwise we can’t place it on the map.</p>}
       {(err || hint) && <p className={err ? 'field-error' : 'field-hint'}>{err ?? hint}</p>}
+      {!hasMapbox && !err && <p className="field-hint">Street address search is unavailable. Use your current location or enter coordinates manually.</p>}
       {locationActions && (
         <div className="addr-actions">
           <button type="button" onClick={() => void fillFromMyLocation()} disabled={locating}>
@@ -157,7 +161,7 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
             {locating ? 'Finding you…' : 'Use my current location'}
           </button>
           <button type="button" onClick={() => setPicking(true)}>
-            <Icon name="pin" size={18} /> Choose on map
+            <Icon name="pin" size={18} /> {hasMapbox ? 'Choose on map' : 'Enter coordinates'}
           </button>
         </div>
       )}

@@ -11,14 +11,16 @@ export function authFail(e: { message?: string; code?: string } | null, step: 's
   if (step === 'verify' && (code === 'otp_expired' || /expired|invalid|incorrect/i.test(msg))) throw new ApiError('That code is wrong or has expired. Check it, or request a new one.', 'otp')
   if (code === 'over_sms_send_rate_limit' || code === 'over_request_rate_limit' || /rate limit|too many|only request this after/i.test(msg)) {
     // the service says how long ("…you can only request this after 42 seconds") — tell the person the real number
-    const seconds = /after (\d+) seconds?/i.exec(msg)?.[1]
-    throw new ApiError(seconds ? `Please wait ${seconds} seconds before asking for another code.` : 'Please wait a minute before asking for another code.', 'rate-limit')
+    // (it rounds down: "after 0 seconds" means a fraction of a second is left, so never tell anyone to wait 0)
+    const reported = /after (\d+) seconds?/i.exec(msg)?.[1]
+    const seconds = reported == null ? 0 : Math.max(1, Number(reported))
+    throw new ApiError(seconds ? `Please wait ${seconds} second${seconds === 1 ? '' : 's'} before asking for another code.` : 'Please wait a minute before asking for another code.', 'rate-limit')
   }
   // Signing in with a number that has no account: GoTrue says "signups not allowed for otp". That is not a configuration problem.
   if (step === 'sign-in' && (code === 'otp_disabled' || /signups not allowed/i.test(msg)))
     throw new ApiError('We couldn’t find a Lifty account for that number. Create an account first.', 'no-account')
   if (code === 'phone_provider_disabled' || /unsupported phone provider|phone signups are disabled/i.test(msg))
-    throw new ApiError('Phone sign-in isn’t switched on for this Lifty project yet. You can explore Lifty in demo mode meanwhile.', 'not-configured')
+    throw new ApiError('Phone sign-in is unavailable right now. Please try again later.', 'not-configured')
   if (code === 'sms_send_failed' || /error sending (confirmation|sms|otp)/i.test(msg)) {
     const twilio = msg.match(/errors\/(\d{4,5})/)?.[1]
     const ref = twilio ? ` (SMS provider error ${twilio})` : ''

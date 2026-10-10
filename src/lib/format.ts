@@ -1,7 +1,7 @@
 import { WEEKDAYS, type Weekday } from '@/domain/types'
 
 export const rand = (n: number) =>
-  `R${Math.round(n).toLocaleString('en-ZA').replace(/ /g, ',').replace(/\s/g, ',')}`
+  `R${Math.round(n).toLocaleString('en-ZA').replace(/\u00a0/g, ',').replace(/\s/g, ',')}`
 
 export function formatDays(days: Weekday[]): string {
   const sorted = [...days].sort((a, b) => a - b)

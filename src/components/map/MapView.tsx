@@ -3,7 +3,8 @@ import type { GeoJSONSource, Map as GlMap, Marker } from 'mapbox-gl'
 import type { LatLng } from '@/domain/types'
 import { boundsOf, seeded } from '@/lib/geo'
 import { env, hasMapbox } from '@/lib/env'
-import { getCurrentPosition, locationPermission } from '@/services/location'
+import { useMapLocation } from '@/hooks/useMapLocation'
+import { accuracyRing, mapboxPosition } from '@/lib/mapLocation'
 import { Icon } from '@/components/ui/Icon'
 
 /**
@@ -50,6 +51,9 @@ interface MapViewProps {
   schematic?: boolean
   /** let the user pan/zoom (tracking screens) */
   interactive?: boolean
+  camera?: { at: LatLng; request: number } | null
+  /** Keep the renderer notice clear of a tracking sheet or status card. */
+  fallbackNoticeTop?: number
 }
 
 let webglOk: boolean | null = null
@@ -67,16 +71,16 @@ function supportsWebGL() {
 export function MapView(props: MapViewProps & LocateProps) {
   const { lowData } = useContext(MapSettings)
   const [glFailed, setGlFailed] = useState(false)
-  const { me, busy, error, locate } = useLocate(props)
+  const { fix, busy, error, camera, locate } = useMapLocation({ enabled: props.locate, autoLocate: props.autoLocate, onLocate: props.onLocate })
+  const me = fix ? { lat: fix.lat, lng: fix.lng } : null
   const useGl = hasMapbox && !lowData && !props.schematic && !glFailed && supportsWebGL()
   const merged: MapViewProps = {
     ...props,
-    // include "you are here" in the camera fit
-    fit: me && !props.locateNoFit ? [...props.fit, me] : props.fit,
+    camera,
     children: (
       <>
         {props.children}
-        {me && <PassengerMarker at={me} label={props.meLabel ?? 'You are here'} />}
+        {me && <><AccuracyCircle at={me} accuracyM={fix?.accuracyM} /><PassengerMarker at={me} label={props.meLabel ?? 'You are here'} accuracy={false} animate={false} currentLocation /></>}
       </>
     ),
     overlay: (
@@ -88,6 +92,8 @@ export function MapView(props: MapViewProps & LocateProps) {
           </button>
         )}
         {error && props.locate && <div className="map-chip" role="alert" style={{ left: 10, right: 60, top: 10, fontWeight: 500 }}>{error}</div>}
+        {!error && me && fix?.accuracyM != null && fix.accuracyM > 50 && <div className="map-chip" role="status" style={{ left: 10, bottom: 10 }}>Location accuracy: about {Math.round(fix.accuracyM)} m</div>}
+        {glFailed && <div className="map-chip" role="status" data-map-fallback style={{ left: 10, right: 10, ...(props.fallbackNoticeTop == null ? { bottom: !error && fix?.accuracyM != null && fix.accuracyM > 50 ? 42 : 10 } : { top: props.fallbackNoticeTop }), fontWeight: 500 }}>Street map unavailable. Showing an illustrative layout.</div>}
       </>
     ),
   }
@@ -99,60 +105,10 @@ export function MapView(props: MapViewProps & LocateProps) {
 interface LocateProps {
   /** show the locate (navigator) button */
   locate?: boolean
-  /** locate automatically when the map opens (once per session if permission is undecided) */
+  /** start a foreground location watch when the map opens */
   autoLocate?: boolean
-  onLocate?: (p: LatLng) => void
+  onLocate?: (p: LatLng | null) => void
   meLabel?: string
-  /** don't re-fit the camera to include the user's position */
-  locateNoFit?: boolean
-}
-
-const AUTO_KEY = 'lifty.autoLocated'
-function useLocate({ locate: enabled, autoLocate, onLocate }: LocateProps) {
-  const [me, setMe] = useState<LatLng | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const cb = useRef(onLocate)
-  cb.current = onLocate
-
-  const locate = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      const fix = await getCurrentPosition()
-      const p = { lat: fix.lat, lng: fix.lng }
-      setMe(p)
-      cb.current?.(p)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Location unavailable')
-      setTimeout(() => setError(null), 6000)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  useEffect(() => {
-    if (!enabled || !autoLocate) return
-    let cancelled = false
-    void locationPermission().then((state) => {
-      if (cancelled || state === 'denied') return
-      // granted → always; undecided → ask once per session (iOS shows its own prompt)
-      let asked = false
-      try {
-        asked = sessionStorage.getItem(AUTO_KEY) === '1'
-        sessionStorage.setItem(AUTO_KEY, '1')
-      } catch {
-        /* private mode */
-      }
-      if (state === 'granted' || !asked) void locate()
-    })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, autoLocate])
-
-  return { me, busy, error, locate }
 }
 
 const toPad = (p: number | Pad | undefined, d = 44): Pad => (typeof p === 'number' ? { top: p, right: p, bottom: p, left: p } : p ?? { top: d, right: d, bottom: d, left: d })
@@ -173,7 +129,7 @@ function lngLatBounds(points: LatLng[]): [[number, number], [number, number]] {
   ]
 }
 
-function GlMapView({ fit, height = 260, dark = false, padding, children, overlay, className = '', label = 'Map', dimmed, interactive = true, onFail }: MapViewProps & { onFail: () => void }) {
+function GlMapView({ fit, height = 260, dark = false, padding, children, overlay, className = '', label = 'Map', dimmed, interactive = true, camera, onFail }: MapViewProps & { onFail: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const [ctx, setCtx] = useState<GlCtx | null>(null)
   const pad = toPad(padding)
@@ -181,10 +137,16 @@ function GlMapView({ fit, height = 260, dark = false, padding, children, overlay
   const fitKey = fit.map((p) => `${p.lat.toFixed(3)},${p.lng.toFixed(3)}`).join('|')
   const fitRef = useRef(fit)
   fitRef.current = fit
+  const cameraRef = useRef(camera)
+  cameraRef.current = camera
 
   useEffect(() => {
     let map: GlMap | null = null
     let cancelled = false
+    let loaded = false
+    const fail = () => { if (!cancelled) { clearTimeout(deadline); onFail() } }
+    // A stalled style request must not leave the map blank indefinitely.
+    const deadline = setTimeout(fail, 8_000)
     Promise.all([import('mapbox-gl'), import('mapbox-gl/dist/mapbox-gl.css')])
       .then(([mod]) => {
         const gl = mod.default
@@ -193,7 +155,7 @@ function GlMapView({ fit, height = 260, dark = false, padding, children, overlay
         map = new gl.Map({
           container: ref.current,
           style: dark ? DARK_STYLE : LIGHT_STYLE,
-          bounds: lngLatBounds(fitRef.current),
+          bounds: lngLatBounds(cameraRef.current ? [cameraRef.current.at] : fitRef.current),
           fitBoundsOptions: { padding: pad, maxZoom: 16 },
           attributionControl: false,
           dragRotate: false,
@@ -204,17 +166,16 @@ function GlMapView({ fit, height = 260, dark = false, padding, children, overlay
         map.addControl(new gl.AttributionControl({ compact: true }), 'bottom-left')
         map.touchZoomRotate.disableRotation()
         map.on('load', () => {
-          if (!cancelled && map) setCtx({ kind: 'gl', map, gl, dark })
+          if (!cancelled && map) { loaded = true; clearTimeout(deadline); setCtx({ kind: 'gl', map, gl, dark }) }
         })
         map.on('error', (e) => {
-          // auth / style failures → fall back to the schematic
           const status = (e.error as { status?: number } | undefined)?.status
-          if (status === 401 || status === 403) onFail()
+          if (!loaded || status === 401 || status === 403) fail()
         })
       })
-      .catch(() => onFail())
+      .catch(fail)
     return () => {
-      cancelled = true
+      cancelled = true; clearTimeout(deadline)
       setCtx(null)
       map?.remove()
     }
@@ -223,9 +184,14 @@ function GlMapView({ fit, height = 260, dark = false, padding, children, overlay
 
   useEffect(() => {
     if (!ctx) return
+    if (cameraRef.current) return
     ctx.map.fitBounds(lngLatBounds(fitRef.current), { padding: pad, maxZoom: 16, duration: 700 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx, fitKey, pad.top, pad.right, pad.bottom, pad.left])
+
+  useEffect(() => {
+    if (ctx && camera) ctx.map.flyTo({ center: mapboxPosition(camera.at), zoom: 16, duration: 700 })
+  }, [ctx, camera])
 
   useEffect(() => {
     if (!ctx || !ref.current) return
@@ -286,13 +252,13 @@ function useGlLine(path: LatLng[], layers: { color: string; width: number; dash?
 }
 
 /** HTML marker that glides between positions instead of jumping. */
-function useGlMarker(at: LatLng | null, render: () => HTMLElement, deps: unknown[], anchor: 'center' | 'bottom' = 'center') {
+function useGlMarker(at: LatLng | null, render: () => HTMLElement, deps: unknown[], anchor: 'center' | 'bottom' = 'center', animate = true) {
   const ctx = useContext(MapCtx)
   const marker = useRef<Marker | null>(null)
   const from = useRef<LatLng | null>(null)
   useEffect(() => {
     if (ctx?.kind !== 'gl' || !at) return
-    const m = new ctx.gl.Marker({ element: render(), anchor }).setLngLat([at.lng, at.lat]).addTo(ctx.map)
+    const m = new ctx.gl.Marker({ element: render(), anchor, offset: anchor === 'bottom' ? [0, 2] : [0, 0] }).setLngLat(mapboxPosition(at)).addTo(ctx.map)
     marker.current = m
     from.current = at
     return () => {
@@ -305,6 +271,7 @@ function useGlMarker(at: LatLng | null, render: () => HTMLElement, deps: unknown
     const m = marker.current
     if (!m || !at || !from.current) return
     const start = from.current
+    if (!animate) { m.setLngLat(mapboxPosition(at)); from.current = at; return }
     const t0 = performance.now()
     let raf = 0
     const step = (t: number) => {
@@ -333,7 +300,7 @@ const CAR_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" str
 
 /* =========================== Schematic renderer =========================== */
 
-function SvgMapView({ fit, height = 260, dark = false, padding, children, overlay, className = '', label = 'Map', dimmed }: MapViewProps) {
+function SvgMapView({ fit, height = 260, dark = false, padding, children, overlay, className = '', label = 'Map', dimmed, camera }: MapViewProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 360, h: typeof height === 'number' ? height : 260 })
 
@@ -351,7 +318,7 @@ function SvgMapView({ fit, height = 260, dark = false, padding, children, overla
   const fitKey = fit.map((p) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`).join('|')
 
   const projector = useMemo<SvgCtx>(() => {
-    const b = boundsOf(fit.length ? fit : [{ lat: 0, lng: 0 }])
+    const b = boundsOf(camera ? [{ lat: camera.at.lat - 0.003, lng: camera.at.lng - 0.003 }, { lat: camera.at.lat + 0.003, lng: camera.at.lng + 0.003 }] : fit.length ? fit : [{ lat: -29.6, lng: 31.15 }])
     const lat0 = (b.minLat + b.maxLat) / 2
     const k = Math.cos((lat0 * Math.PI) / 180)
     const minSpan = 0.0016
@@ -366,7 +333,7 @@ function SvgMapView({ fit, height = 260, dark = false, padding, children, overla
     const oy = pad.top + availH / 2
     return { kind: 'svg', w: size.w, h: size.h, dark, project: (p) => ({ x: ox + (p.lng - cx) * k * scale, y: oy - (p.lat - cy) * scale }) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitKey, size.w, size.h, dark, pad.top, pad.right, pad.bottom, pad.left])
+  }, [fitKey, size.w, size.h, dark, pad.top, pad.right, pad.bottom, pad.left, camera])
 
   return (
     <div ref={ref} className={`map ${dark ? 'map-dark' : ''} ${className}`} style={{ height }} role="img" aria-label={label}>
@@ -532,14 +499,43 @@ export function LocationDot({ at, color }: { at: LatLng; color: string }) {
 
 export const PickupMarker = ({ at, label = 'Pickup' }: { at: LatLng; label?: string }) => <LocationPin at={at} color="#00b386" label={label} />
 export const DestinationMarker = ({ at, label = 'Destination' }: { at: LatLng; label?: string }) => <LocationPin at={at} color="#ef4444" label={label} />
+export const SavedLocationMarker = ({ at, label }: { at: LatLng; label: string }) => <LocationPin at={at} color="#8b5cf6" label={label} />
 
-export function PassengerMarker({ at, label, accuracy }: { at: LatLng; label?: string; accuracy?: boolean }) {
-  useGlMarker(at, () => el(`<span class="gl-pulse"></span><span class="gl-blue"></span>${label ? `<span class="gl-label below">${escapeHtml(label)}</span>` : ''}`, 'gl-passenger'), [label])
+export function AccuracyCircle({ at, accuracyM }: { at: LatLng; accuracyM?: number | null }) {
+  const path = useMemo(() => accuracyRing(at, accuracyM), [at.lat, at.lng, accuracyM])
+  const ctx = useContext(MapCtx)
+  const id = 'accuracy' + useId().replace(/[^a-zA-Z0-9]/g, '')
+  const data = useMemo(() => ({ type: 'Feature' as const, properties: {}, geometry: { type: 'Polygon' as const, coordinates: path.length ? [path.map(mapboxPosition)] : [] } }), [path])
+  useEffect(() => {
+    if (ctx?.kind !== 'gl') return
+    const map = ctx.map
+    map.addSource(id, { type: 'geojson', data })
+    map.addLayer({ id: id + '-fill', type: 'fill', source: id, paint: { 'fill-color': '#3b82f6', 'fill-opacity': 0.13 } })
+    map.addLayer({ id: id + '-line', type: 'line', source: id, paint: { 'line-color': '#3b82f6', 'line-width': 1.5, 'line-opacity': 0.5 } })
+    return () => {
+      try { for (const suffix of ['-fill', '-line']) if (map.getLayer(id + suffix)) map.removeLayer(id + suffix); if (map.getSource(id)) map.removeSource(id) } catch { /* map removed */ }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, id])
+  useEffect(() => { if (ctx?.kind === 'gl') (ctx.map.getSource(id) as GeoJSONSource | undefined)?.setData(data) }, [ctx, data, id])
+  const svg = useSvg()
+  if (!svg || !path.length) return null
+  const p = svg.project(at), edge = svg.project(path[0])
+  return <circle cx={p.x} cy={p.y} r={Math.hypot(edge.x - p.x, edge.y - p.y)} fill="#3b82f6" fillOpacity={0.13} stroke="#3b82f6" strokeOpacity={0.5} data-location-accuracy-m={accuracyM} />
+}
+
+export function PassengerMarker({ at, label, accuracy, animate = true, currentLocation }: { at: LatLng; label?: string; accuracy?: boolean; animate?: boolean; currentLocation?: boolean }) {
+  const marker = useGlMarker(at, () => {
+    const node = el(`${accuracy !== false ? '<span class="gl-pulse"></span>' : ''}<span class="gl-blue"></span>${label ? `<span class="gl-label below">${escapeHtml(label)}</span>` : ''}`, 'gl-passenger')
+    if (currentLocation) node.dataset.currentLocation = 'true'
+    return node
+  }, [label, accuracy, currentLocation], 'center', animate)
+  useEffect(() => { const node = marker.current?.getElement(); if (node && currentLocation) { node.dataset.locationLat = String(at.lat); node.dataset.locationLng = String(at.lng) } })
   const svg = useSvg()
   if (!svg) return null
   const { x, y } = svg.project(at)
   return (
-    <g className="smooth" style={{ transform: `translate(${x}px, ${y}px)` }}>
+    <g className={animate ? 'smooth' : undefined} style={{ transform: `translate(${x}px, ${y}px)` }} data-current-location={currentLocation || undefined} data-location-lat={currentLocation ? at.lat : undefined} data-location-lng={currentLocation ? at.lng : undefined}>
       {accuracy !== false && <circle r={20} fill="var(--map-blue)" opacity={0.18} className="pulse-ring" />}
       <circle r={9} fill="#fff" filter="url(#shadow)" />
       <circle r={6.2} fill="var(--map-blue)" />
@@ -553,6 +549,7 @@ export function DriverMarker({ at, heading = 0, label, stale }: { at: LatLng; he
   useEffect(() => {
     const node = marker.current?.getElement()
     if (!node) return
+    node.setAttribute('data-driver-marker', '') // stable hook for tests: present in both renderers
     node.style.setProperty('--heading', `${heading}deg`)
     node.classList.toggle('stale', !!stale)
   })
@@ -560,7 +557,7 @@ export function DriverMarker({ at, heading = 0, label, stale }: { at: LatLng; he
   if (!svg) return null
   const { x, y } = svg.project(at)
   return (
-    <g className="smooth" style={{ transform: `translate(${x}px, ${y}px)`, opacity: stale ? 0.6 : 1 }}>
+    <g data-driver-marker="" className="smooth" style={{ transform: `translate(${x}px, ${y}px)`, opacity: stale ? 0.6 : 1 }}>
       <circle r={18} fill="var(--navy)" filter="url(#shadow)" stroke="#fff" strokeWidth={3} />
       <g transform={`rotate(${heading})`}>
         <path d="M0 -26 L6 -19 L-6 -19Z" fill="var(--navy)" stroke="#fff" strokeWidth={1.4} strokeLinejoin="round" />

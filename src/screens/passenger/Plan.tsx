@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { DestinationMarker, MapView, PassengerMarker, PickupMarker } from '@/components/map/MapView'
+import { DestinationMarker, MapView, SavedLocationMarker, PickupMarker } from '@/components/map/MapView'
 import { CommuteCalendar, scheduleSummary, type ScheduleValue } from '@/components/ui/CommuteCalendar'
 import { AddressField } from '@/components/ui/extras'
 import { Icon } from '@/components/ui/Icon'
 import { Banner, BottomSheet, Card, LiftyButton, ProfileRow, ScreenBody, Segmented, Select } from '@/components/ui/kit'
 import type { Place } from '@/domain/types'
 import { distanceM } from '@/lib/geo'
+import { validCoordinate } from '@/lib/mapLocation'
 import { addMinutes, formatDistance, walkLabel } from '@/lib/format'
 import { useAsync } from '@/hooks/useAsync'
 import { api } from '@/services/api'
@@ -35,10 +36,12 @@ export function PlanCommute() {
   // the morning trip goes home → work; the evening trip is the reverse
   const from = toHome ? p.destination : p.origin
   const to = toHome ? p.origin : p.destination
+  const fromReady = !!from.label.trim() && validCoordinate(from.location)
+  const toReady = !!to.label.trim() && validCoordinate(to.location)
   const setFrom = (pl: Place) => updatePlan(toHome ? { destination: pl } : { origin: pl, preferredPickup: undefined })
   const setTo = (pl: Place) => updatePlan(toHome ? { origin: pl } : { destination: pl })
 
-  const { data: points } = useAsync(() => api.listPickupPoints(from.location), [from.location.lat, from.location.lng])
+  const { data: points } = useAsync(() => fromReady ? api.listPickupPoints(from.location) : Promise.resolve([]), [fromReady, from.location.lat, from.location.lng])
   const nearby = useMemo(
     () => (points ?? [])
       .map((pt) => ({ ...pt, d: Math.round(distanceM(from.location, pt.location) * 1.25) }))
@@ -89,10 +92,10 @@ export function PlanCommute() {
         </div>
 
         <div className="map-frame" style={{ marginTop: 12 }}>
-          <MapView fit={[from.location, ...(pickup ? [pickup.location] : []), to.location]} height={220} padding={44} label="Preview of your commute" locate locateNoFit>
-            <PassengerMarker at={from.location} label={toHome ? 'Work' : 'Home'} />
+          <MapView fit={[...(fromReady ? [from.location] : []), ...(pickup ? [pickup.location] : []), ...(toReady ? [to.location] : [])]} height={220} padding={44} label="Preview of your commute" locate>
+            {fromReady && <SavedLocationMarker at={from.location} label={toHome ? 'Saved work' : 'Saved home'} />}
             {pickup && <PickupMarker at={pickup.location} label={pickup.label} />}
-            <DestinationMarker at={to.location} label={to.label} />
+            {toReady && <DestinationMarker at={to.location} label={to.label} />}
           </MapView>
         </div>
         <p className="small muted" style={{ margin: '8px 4px 0' }}>
@@ -100,7 +103,8 @@ export function PlanCommute() {
         </p>
       </ScreenBody>
       <div className="screen-footer" style={{ paddingBottom: 12 }}>
-        <LiftyButton icon="search" onClick={() => nav('/p/finding')} disabled={!scheduleReady}>Find Lift Clubs</LiftyButton>
+        {(!fromReady || !toReady) && <p className="field-hint">Choose a valid start and destination before searching.</p>}
+        <LiftyButton icon="search" onClick={() => nav('/p/finding')} disabled={!scheduleReady || !fromReady || !toReady}>Find Lift Clubs</LiftyButton>
       </div>
 
       {/* From / To */}

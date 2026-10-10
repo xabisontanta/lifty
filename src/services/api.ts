@@ -16,18 +16,9 @@ import type {
   UserProfile,
   PublicVerification,
 } from '@/domain/types'
-import { DRIVERS, INCOMING_REQUESTS, MATCHES, PICKUP_SHELL, RETURN_MATCHES } from '@/data/mock'
-import { isoDate } from '@/lib/format'
-import { computeMatches } from './matchingService'
-import { DEMO_LEGS, DEMO_PICKUP_POINTS, demoRouter } from '@/data/demoLegs'
 import { hasSupabase } from '@/lib/env'
 
-/**
- * LiftyApi is the only surface screens talk to. Two implementations:
- *  - `mockApi` (demo mode): local data, simulated latency, used for demos and tests
- *  - `liveApi` (src/services/liveApi.ts): Supabase + PostGIS matching + Realtime
- * `api` delegates to whichever data source is active.
- */
+/** Screens use this backend interface in every environment, including the isolated local test stack. */
 
 export type DocKind = 'id' | 'licence' | 'vehicle_registration' | 'insurance'
 
@@ -75,7 +66,7 @@ export interface CommuteInstance {
   routeDurationS: number
   destination: Place
   riders: { passengerId: string; status: string; firstName: string; lastInitial: string; avatarHue: number; pickup: Place; pickupTime: string; driverArrivedAt?: number | null; passengerAtPickup?: boolean; collectedAt?: number | null; noShowAt?: number | null }[]
-  driver: { id: string; firstName: string; lastInitial: string; rating: number; ratingCount: number; avatarHue: number; verification: PublicVerification }
+  driver: { isTest?: boolean; id: string; firstName: string; lastInitial: string; rating: number; ratingCount: number; avatarHue: number; verification: PublicVerification; completedTrips?: number; reliability?: number | null }
   vehicle: { make: string; model: string; colour: string; bodyType: 'sedan' | 'hatchback' | 'suv' | 'other'; registrationSummary: string; photoUrl?: string }
 }
 
@@ -185,7 +176,7 @@ export interface LiftyApi {
   // auth
   signUp(input: { fullName: string; phone: string; role: Role }): Promise<{ resendInSeconds: number }>
   sendOtp(phone: string): Promise<{ resendInSeconds: number }>
-  /** returns the server profile for returning users (null in demo mode) */
+  /** Returns the authenticated server profile. */
   verifyOtp(phone: string, code: string): Promise<AccountSnapshot | null>
   getAccountSnapshot(): Promise<AccountSnapshot | null>
   completeOnboarding(): Promise<void>
@@ -262,36 +253,6 @@ export class ApiError extends Error {
   }
 }
 
-// ---- dev switch so error / offline UX can be exercised without a backend ----
-export type Simulation = 'none' | 'fail' | 'offline'
-const SIM_KEY = 'lifty.simulate'
-export const getSimulation = (): Simulation => {
-  try {
-    return (localStorage.getItem(SIM_KEY) as Simulation) || 'none'
-  } catch {
-    return 'none'
-  }
-}
-export const setSimulation = (s: Simulation) => {
-  try {
-    localStorage.setItem(SIM_KEY, s)
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-async function gate(latency = 450) {
-  await sleep(latency)
-  if (typeof navigator !== 'undefined' && navigator.onLine === false)
-    throw new ApiError("You're offline. Check your connection and try again.", 'offline')
-  const sim = getSimulation()
-  if (sim === 'offline') throw new ApiError("You're offline. Check your connection and try again.", 'offline')
-  if (sim === 'fail') throw new ApiError('Something went wrong on our side. Please try again.', 'server')
-}
-
-// ---- compatibility ----
 /**
  * Compatibility is the product's core ranking signal. It deliberately weights
  * route overlap, pickup convenience, deviation and schedule fit — never
@@ -314,291 +275,24 @@ export function contributionCap(distanceM: number, days: number, seats: number):
   return Math.ceil((suggestedContribution(distanceM, days, seats) * 1.5) / 10) * 10
 }
 
-// ---- mock join-request persistence (survives reload) ----
-const REQ_KEY = 'lifty.requests'
-type StoredReq = JoinRequest & { acceptAfter: number }
-const readJson = <T,>(key: string, fallback: T): T => {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : fallback
-  } catch {
-    return fallback
-  }
-}
-const writeJson = (key: string, v: unknown) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(v))
-  } catch {
-    /* ignore */
-  }
-}
-const INCOMING_KEY = 'lifty.incoming'
-const readIncoming = () => readJson<IncomingRequest[]>(INCOMING_KEY, INCOMING_REQUESTS.map((r) => ({ ...r })))
-const demoMatchCache = new Map<string, Match>()
 let lastSuggestions: string[] = []
-/** What would widen the search — shown on the no-match screen. */
+/** What would widen the search, supplied by the matching service. */
 export const getLastMatchSuggestions = () => lastSuggestions
-export const setLastMatchSuggestions = (s: string[]) => {
-  lastSuggestions = s
-}
-const fileToDataUrl = (file: File) =>
-  new Promise<string>((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => resolve(String(r.result))
-    r.onerror = () => reject(new ApiError('Could not read that file', 'invalid'))
-    r.readAsDataURL(file)
-  })
+export const setLastMatchSuggestions = (suggestions: string[]) => { lastSuggestions = suggestions }
 
-const mockChats = new Map<string, ChatMessage[]>()
-const mockChatListeners = new Map<string, Set<(m: ChatMessage) => void>>()
-const MOCK_NOTIFS_KEY = 'lifty.notifications'
-
-export const mockApi: LiftyApi = {
-  async signUp() {
-    await gate(350)
-    return { resendInSeconds: 28 }
-  },
-  async sendOtp() {
-    await gate(350)
-    return { resendInSeconds: 28 }
-  },
-  async verifyOtp(_phone, code) {
-    await gate(500)
-    if (!/^\d{6}$/.test(code)) throw new ApiError('Enter the 6-digit code we sent you.', 'invalid')
-    if (code === '000000') throw new ApiError("That code isn't right. Check the number and try again.", 'invalid')
-    return null
-  },
-  async getAccountSnapshot() { return null },
-  async completeOnboarding() {},
-  async saveDriverSettings() {},
-  async listExceptions() { return [] },
-  async deleteException() {},
-  async setPause() {},
-  async requestPickupChange() {},
-  async listPickupChanges() { return [] },
-  async reviewPickupChange() {},
-  async listContributions() { return [] },
-  async reportContribution() {},
-  async confirmContribution() {},
-  async listHistory() { return [] },
-  async setMatchAlert() {},
-  async getAdminHealth() { return { pendingDocuments: 0, openReports: 0, suspendedUsers: 0, notifications: { pending: 0, failed: 0, delivered: 0, providerConfigured: false }, jobs: [] } },
-  async suspendUser() {},
-  async signOut() {},
-  async savePassengerCommute() {
-    await gate(200)
-    return 'mock-commute'
-  },
-  async saveDriverSetup() {
-    await gate(500)
-  },
-  async uploadPhoto(_kind, file) {
-    await gate(300)
-    return fileToDataUrl(file)
-  },
-  async uploadDocument() {
-    await gate(400)
-  },
-  async setConsent() {},
-  async listPickupPoints() {
-    await gate(200)
-    return [PICKUP_SHELL, ...MATCHES.map((m) => m.pickup).filter((p) => p.label !== PICKUP_SHELL.label)]
-  },
-  async findMatches(plan) {
-    await gate(1100)
-    const run = await computeMatches(plan, DEMO_LEGS, DEMO_PICKUP_POINTS, demoRouter())
-    lastSuggestions = run.suggestions
-    demoMatchCache.clear()
-    run.matches.forEach((m) => demoMatchCache.set(m.id, m))
-    return run.matches
-  },
-  async getMatch(id) {
-    await gate(250)
-    // the same derived result the list showed; recomputed from the saved plan after a reload
-    let m = demoMatchCache.get(id)
-    if (!m) {
-      const saved = readJson<{ plan?: CommutePlan } | null>('lifty.state.v1', null)?.plan
-      if (saved) (await computeMatches(saved, DEMO_LEGS, DEMO_PICKUP_POINTS, demoRouter())).matches.forEach((x) => demoMatchCache.set(x.id, x))
-      m = demoMatchCache.get(id)
-    }
-    if (!m) throw new ApiError('This lift club is no longer a match for your commute.', 'not-found')
-    return m
-  },
-  async getDriver(id) {
-    await gate(250)
-    const d = DRIVERS.find((x) => x.id === id)
-    if (!d) throw new ApiError('We couldn’t find that driver.', 'not-found')
-    return d
-  },
-  async requestToJoin(matchId) {
-    await gate(700)
-    const req: StoredReq = {
-      id: `jr-${Date.now()}`,
-      matchId,
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-      startDate: isoDate(7),
-      acceptAfter: Date.now() + 9000, // mock driver responds after ~9s
-    }
-    writeJson(REQ_KEY, [...readJson<StoredReq[]>(REQ_KEY, []).filter((r) => r.matchId !== matchId), req])
-    return req
-  },
-  async getJoinRequest(id) {
-    await gate(150)
-    const r = readJson<StoredReq[]>(REQ_KEY, []).find((x) => x.id === id)
-    if (!r) throw new ApiError('We couldn’t find that request.', 'not-found')
-    const age = Date.now() - new Date(r.createdAt).getTime()
-    const status: RequestStatus = Date.now() >= r.acceptAfter ? 'accepted' : age > 3000 ? 'reviewing' : 'pending'
-    return { id: r.id, matchId: r.matchId, status, createdAt: r.createdAt, startDate: r.startDate }
-  },
-  async cancelJoinRequest(id) {
-    await gate(300)
-    writeJson(REQ_KEY, readJson<StoredReq[]>(REQ_KEY, []).filter((r) => r.id !== id))
-  },
-  async getMyClubs() {
-    return null // demo mode keeps clubs in the local store
-  },
-  async listIncomingRequests() {
-    await gate(500)
-    return readIncoming()
-  },
-  async respondToRequest(id, decision) {
-    await gate(600)
-    const all = readIncoming()
-    const idx = all.findIndex((r) => r.id === id)
-    if (idx < 0) throw new ApiError('We couldn’t find that request.', 'not-found')
-    all[idx] = { ...all[idx], status: decision === 'accept' ? 'accepted' : 'declined' }
-    writeJson(INCOMING_KEY, all)
-    return all[idx]
-  },
-  async removeMember() {
-    await gate(300)
-  },
-  async markContributionPaid() {
-    await gate(300)
-  },
-  async addException(e) { return { ...e, id: crypto.randomUUID() } },
-  async getCurrentInstance() {
-    return null
-  },
-  async listMessages(clubId) {
-    return mockChats.get(clubId) ?? [{ id: 'm0', senderId: 'other', senderName: 'Lift club', body: 'Hi! Happy to answer any questions about the commute.', createdAt: Date.now() - 60000, mine: false }]
-  },
-  async sendMessage(clubId, body) {
-    const list = mockChats.get(clubId) ?? (await mockApi.listMessages(clubId))
-    const mine: ChatMessage = { id: `m${Date.now()}`, senderId: 'me', senderName: 'You', body, createdAt: Date.now(), mine: true }
-    mockChats.set(clubId, [...list, mine])
-    mockChatListeners.get(clubId)?.forEach((l) => l(mine))
-    setTimeout(() => {
-      const reply: ChatMessage = { id: `m${Date.now()}r`, senderId: 'other', senderName: 'Lift club', body: 'Thanks — see you at the pickup point!', createdAt: Date.now(), mine: false }
-      mockChats.set(clubId, [...(mockChats.get(clubId) ?? []), reply])
-      mockChatListeners.get(clubId)?.forEach((l) => l(reply))
-    }, 1200)
-  },
-  subscribeMessages(clubId, onMessage) {
-    const set = mockChatListeners.get(clubId) ?? new Set()
-    set.add(onMessage)
-    mockChatListeners.set(clubId, set)
-    return () => set.delete(onMessage)
-  },
-  async listNotifications() {
-    return readJson<AppNotification[]>(MOCK_NOTIFS_KEY, [
-      { id: 'n-welcome', kind: 'welcome', title: 'Welcome to Lifty', body: 'Plan your commute to find drivers already going your way.', read: false, createdAt: Date.now() },
-    ])
-  },
-  async markNotificationsRead() {
-    writeJson(MOCK_NOTIFS_KEY, (await mockApi.listNotifications()).map((n) => ({ ...n, read: true })))
-  },
-  subscribeNotifications() {
-    return () => {}
-  },
-  async savePushToken() {},
-  async submitRating() {
-    await gate(500)
-  },
-  async submitReport() {
-    await gate(400)
-  },
-  async exportMyData() {
-    await gate(300)
-    const out: Record<string, unknown> = { exportedAt: new Date().toISOString(), note: 'Demo mode — data is stored only on this device.' }
-    try {
-      out.state = JSON.parse(localStorage.getItem('lifty.state.v1') || '{}')
-    } catch {
-      /* ignore */
-    }
-    return out
-  },
-  async deleteMyAccount() {
-    await gate(300)
-  },
-  async isAdmin() {
-    return true // demo: admin console is open so it can be explored
-  },
-  async listPendingDocuments() {
-    await gate(300)
-    return [
-      { id: 'doc-1', userId: 'drv-x', userName: 'Mandla Z.', kind: 'licence', storagePath: '', detail: 'Code B', createdAt: Date.now() - 3600000 },
-      { id: 'doc-2', userId: 'drv-x', userName: 'Mandla Z.', kind: 'vehicle_registration', storagePath: '', detail: 'NP 552-391', createdAt: Date.now() - 3500000 },
-    ]
-  },
-  async documentUrl() {
-    return '/images/car-sedan.webp'
-  },
-  async reviewDocument() {
-    await gate(300)
-  },
-  async listReports() {
-    await gate(300)
-    return [{ id: 'rep-1', kind: 'incident', body: 'Driver arrived 15 minutes late twice this week.', status: 'open', createdAt: Date.now() - 7200000 }]
-  },
-  async updateReport() {
-    await gate(200)
-  },
-}
-
-// ---- data source switch ----
-export type DataSource = 'live' | 'demo'
-const SOURCE_KEY = 'lifty.source'
 let liveImpl: LiftyApi | null = null
-export function registerLiveApi(impl: LiftyApi) {
-  liveImpl = impl
+export function registerLiveApi(impl: LiftyApi) { liveImpl = impl }
+export const isLive = () => hasSupabase && !!liveImpl
+
+// Old builds stored a demo choice. It must never prevent genuine backend sign-in.
+for (const storage of ['localStorage', 'sessionStorage'] as const) {
+  try { globalThis[storage]?.removeItem('lifty.source'); globalThis[storage]?.removeItem('lifty.simulate') } catch { /* Storage may be unavailable. */ }
 }
-/**
- * Demo mode is remembered for the current TAB only (sessionStorage) — never permanently.
- * A permanent flag trapped people: after one tap on "Use demo", a normal browser tab never contacted the backend again
- * (no code was ever sent) while a private tab, which starts with empty storage, worked. Flags saved by older builds
- * (localStorage) are removed here, so a device that is stuck in demo mode heals itself on the next load.
- */
-const demoFlag = () => {
-  try {
-    return sessionStorage.getItem(SOURCE_KEY) === 'demo'
-  } catch {
-    return false
-  }
-}
-try {
-  if (hasSupabase) localStorage.removeItem(SOURCE_KEY)
-} catch {
-  /* storage unavailable */
-}
-export function getDataSource(): DataSource {
-  return !hasSupabase || demoFlag() ? 'demo' : 'live'
-}
-export function setDataSource(s: DataSource) {
-  try {
-    if (s === 'demo') sessionStorage.setItem(SOURCE_KEY, 'demo')
-    else sessionStorage.removeItem(SOURCE_KEY)
-  } catch {
-    /* storage unavailable */
-  }
-}
-export const isLive = () => getDataSource() === 'live' && !!liveImpl
 
 export const api: LiftyApi = new Proxy({} as LiftyApi, {
-  get(_t, key: string) {
-    const impl = isLive() ? liveImpl! : mockApi
-    const v = impl[key as keyof LiftyApi]
-    return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(impl) : v
+  get(_target, key: string) {
+    if (!liveImpl || !hasSupabase) throw new ApiError('Lifty could not connect to its backend. Please try again later.', 'not-configured')
+    const value = liveImpl[key as keyof LiftyApi]
+    return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(liveImpl) : value
   },
 })

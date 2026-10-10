@@ -39,6 +39,7 @@ interface Props {
   /** small whole-route overview in the corner (for zoomed-in static views) */
   inset?: boolean
   passengerLabel?: string
+  fallbackNoticeTop?: number
 }
 
 export function MatchMap({
@@ -64,6 +65,7 @@ export function MatchMap({
   animate = true,
   inset,
   passengerLabel,
+  fallbackNoticeTop,
 }: Props) {
   const local: LatLng[] = [pickup, ...geometry.walking, ...geometry.deviation]
   if (passenger) local.push(passenger)
@@ -78,7 +80,7 @@ export function MatchMap({
 
   return (
     <div className="map-wrap">
-      <MapView fit={fit} height={height} dark={dark} padding={padding ?? (focus === 'pickup' ? 54 : 48)} label={label ?? 'Map showing the driver route, walking path and pickup point'} overlay={<>{overlay}{inset && <div className="map-inset" aria-hidden><MapView schematic fit={[...geometry.path.slice(0, 1), destination]} height="100%" padding={18} label="Whole route overview"><RouteLine path={geometry.path} animate={false} /><LocationDot at={pickup} color="var(--teal)" /><LocationDot at={destination} color="var(--error)" /></MapView></div>}</>}>
+      <MapView fit={fit} height={height} dark={dark} padding={padding ?? (focus === 'pickup' ? 54 : 48)} fallbackNoticeTop={fallbackNoticeTop} label={label ?? 'Map showing the driver route, walking path and pickup point'} overlay={<>{overlay}{inset && <div className="map-inset" aria-hidden><MapView schematic fit={[...geometry.path.slice(0, 1), destination]} height="100%" padding={18} label="Whole route overview"><RouteLine path={geometry.path} animate={false} /><LocationDot at={pickup} color="var(--teal)" /><LocationDot at={destination} color="var(--error)" /></MapView></div>}</>}>
         {showRoute && <RouteLine path={geometry.path} animate={animate} />}
         {showDeviation && <DeviationRoute path={geometry.deviation} animate={animate} />}
         {showWalking && <WalkingPath path={geometry.walking} animate={animate} />}

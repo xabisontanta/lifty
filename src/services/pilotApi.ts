@@ -4,6 +4,7 @@ import { sb, publicFileUrl } from './supabase'
 import { hueFor } from './liveApi'
 import { isSessionProblem } from './sessionErrors'
 import type { CommutePlan, Place, ScheduleException } from '@/domain/types'
+import { validCoordinate } from '@/lib/mapLocation'
 
 type J = any
 export async function pilotRpc(name: string, args?: Record<string, unknown>): Promise<J> {
@@ -12,12 +13,18 @@ export async function pilotRpc(name: string, args?: Record<string, unknown>): Pr
  return data
 }
 const at=(value?:string|null)=>value?new Date(value).getTime():undefined
-const place=(label:string,g:J):Place=>({label,area:label,location:{lng:Number(g?.coordinates?.[0]??0),lat:Number(g?.coordinates?.[1]??0)}})
+const place=(label:string,g:J):Place=>{
+ const coordinates=g?.coordinates
+ const location=Array.isArray(coordinates)?{lng:coordinates[0],lat:coordinates[1]}:null
+ if((g?.type&&g.type!=='Point')||!validCoordinate(location))
+  throw new ApiError('Your saved commute location could not be loaded. Please retry or update your commute.','server')
+ return {label,area:label,location}
+}
 const exception=(e:J):ScheduleException=>({id:e.id,kind:e.kind,date:e.date??'ongoing',note:e.note??undefined,legId:e.leg_id??undefined})
 export function mapAccount(j:J):AccountSnapshot {
  const p=j.profile, q=j.private??{},v=j.vehicle,legs=j.legs??[],commutes:J[]=j.commutes??[]
  return {
-  user:{id:p.id,role:p.role,firstName:p.first_name,lastInitial:p.last_initial,fullName:[p.first_name,q.last_name].filter(Boolean).join(' '),phone:q.phone??'',avatarHue:hueFor(p.id),memberSince:p.created_at.slice(0,10)},
+  user:{id:p.id,isTest:p.is_test===true,role:p.role,firstName:p.first_name,lastInitial:p.last_initial,fullName:[p.first_name,q.last_name].filter(Boolean).join(' '),phone:q.phone??'',avatarHue:hueFor(p.id),memberSince:p.created_at.slice(0,10)},
   onboarded:!!p.onboarding_completed_at,avatarUrl:publicFileUrl('avatars',p.avatar_path),verification:j.verification,
   preferences:{locationConsent:!!q.location_consent_at,lowData:!!q.low_data_mode,emergencyContact:q.emergency_contact??''},
   commutes:commutes.map((c):CommutePlan=>({direction:c.direction,

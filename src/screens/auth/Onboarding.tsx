@@ -5,7 +5,7 @@ import { Avatar, Banner, DayPicker, Segmented, Select, TextField, Toggle, useToa
 import { Icon, type IconName } from '@/components/ui/Icon'
 import { CommuteCalendar, type ScheduleValue } from '@/components/ui/CommuteCalendar'
 import { formatDays, formatDistance, rand } from '@/lib/format'
-import { api, contributionCap, isLive, suggestedContribution, type DocKind, type DriverSetupInput } from '@/services/api'
+import { api, contributionCap, suggestedContribution, type DocKind, type DriverSetupInput } from '@/services/api'
 import { directions } from '@/services/mapbox'
 import { hasMapbox } from '@/lib/env'
 import { isScheduleReady } from '@/domain/schedule'
@@ -71,7 +71,7 @@ export function PassengerCommute() {
             </div>
           )}
         </div>
-        {!hasMapbox && <Banner tone="info">Address search isn’t configured — using the demo route.</Banner>}
+        {!hasMapbox && <Banner tone="info">Address search isn’t configured — select your locations on the map or enter coordinates manually.</Banner>}
       </div>
     </OnboardShell>
   )
@@ -187,12 +187,12 @@ export function DriverCommute() {
   const c = state.driver.commute
   const set = (patch: Partial<typeof c>) => updateDriver({ commute: { ...c, ...patch } })
   // live data needs real coordinates (from the address search) to compute the route
-  const ready = c.days.length > 0 && (!isLive() || (!!c.originPlace && !!c.destinationPlace))
+  const ready = c.days.length > 0 && !!c.originPlace && !!c.destinationPlace
   return (
     <OnboardShell step={2} total={4} title="Your regular commute" subtitle="Tell us about the journey you already make." onBack={() => nav(-1)} cta="Continue" disabled={!ready} onNext={() => nav('/onboarding/driver/3')}>
       <div className="stack-4">
-        <AddressField label="Home address" value={c.originPlace?.label ?? c.origin} onSelect={(p) => set({ originPlace: p, origin: p.label })} onText={(t) => set({ origin: t })} hint="Never shown to passengers — they only see the part of your route near their pickup." />
-        <AddressField label="Work address" icon="flag" value={c.destinationPlace?.label ?? c.destination} onSelect={(p) => set({ destinationPlace: p, destination: p.label })} onText={(t) => set({ destination: t })} />
+        <AddressField label="Home address" value={c.originPlace?.label ?? c.origin} onSelect={(p) => set({ originPlace: p, origin: p.label })} onText={(t) => set({ origin: t, originPlace: undefined })} hint="Never shown to passengers — they only see the part of your route near their pickup." />
+        <AddressField label="Work address" icon="flag" value={c.destinationPlace?.label ?? c.destination} onSelect={(p) => set({ destinationPlace: p, destination: p.label })} onText={(t) => set({ destination: t, destinationPlace: undefined })} />
         <div className="row-flex">
           <div className="grow"><Select label="Departure time (to work)" value={c.departure} onChange={(departure) => set({ departure })} options={MORNING} /></div>
           <div className="grow"><Select label="Return time (from work)" value={c.returnTime} onChange={(returnTime) => set({ returnTime })} options={EVENING} /></div>
@@ -262,13 +262,17 @@ export function DriverSchedule() {
   const [route, setRoute] = useState<{ coordinates: [number, number][]; distanceM: number; durationS: number } | null>(null)
   const [routeErr, setRouteErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [routeAttempt, setRouteAttempt] = useState(0)
 
   useEffect(() => {
+    let active=true
+    setRoute(null);setRouteErr(null)
     if (!c.originPlace || !c.destinationPlace) return
     directions([c.originPlace.location, c.destinationPlace.location], 'driving')
-      .then(setRoute)
-      .catch((e) => setRouteErr(e instanceof Error ? e.message : 'Could not calculate your route'))
-  }, [c.originPlace, c.destinationPlace])
+      .then(value=>{if(active)setRoute(value)})
+      .catch((e) => {if(active)setRouteErr(e instanceof Error ? e.message : 'Could not calculate your route')})
+    return()=>{active=false}
+  }, [c.originPlace, c.destinationPlace, routeAttempt])
 
   const distanceM = route?.distanceM ?? 35000
   const suggested = suggestedContribution(distanceM, c.days.length, d.seatsOpen || d.vehicle.seats)
@@ -292,13 +296,11 @@ export function DriverSchedule() {
         }
         await api.saveDriverSetup({ vehicle: d.vehicle, legs, seats: d.seatsOpen || d.vehicle.seats, maxDeviationMin: c.maxDeviationMin, monthlyContribution: d.monthlyContribution })
       } else {
-        if(isLive())throw new Error('Select your home and work on the map and wait for the route to load.')
-        await api.saveDriverSetup({ vehicle: d.vehicle, legs: [], seats: d.seatsOpen, maxDeviationMin: c.maxDeviationMin, monthlyContribution: d.monthlyContribution })
+        throw new Error('Select your home and work on the map and wait for the route to load.')
       }
       await api.setConsent({location:state.sharingConsent,terms:true})
       await api.completeOnboarding()
-      if(isLive())await refreshAccount()
-      else update({ onboarded: true })
+      await refreshAccount()
       nav('/d/home', { replace: true })
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not save your commute', 'error')
@@ -308,7 +310,7 @@ export function DriverSchedule() {
   }
 
   return (
-    <OnboardShell step={4} total={4} title="Photos, detour & contribution" subtitle="Help passengers recognise you, and set fair cost-sharing." onBack={() => nav(-1)} cta="Finish set-up" loading={saving} disabled={c.days.length === 0 || over} onNext={finish}>
+    <OnboardShell step={4} total={4} title="Photos, detour & contribution" subtitle="Help passengers recognise you, and set fair cost-sharing." onBack={() => nav(-1)} cta="Finish set-up" loading={saving} disabled={c.days.length === 0 || over || !route || !!routeErr} onNext={finish}>
       <div className="stack-5">
         <div className="row-flex">
           {state.avatarUrl ? <Avatar first={state.user?.firstName ?? 'D'} hue={24} size={64} src={state.avatarUrl} /> : null}
@@ -333,7 +335,8 @@ export function DriverSchedule() {
           <TextField label="Monthly contribution per passenger (R)" value={String(d.monthlyContribution)} onChange={(v) => updateDriver({ monthlyContribution: Number(v.replace(/\D/g, '')) || 0 })} inputMode="numeric" error={over ? `Lift clubs share costs — keep it at or below ${rand(cap)} for this route.` : undefined} hint={`Fair share for ${route ? formatDistance(distanceM) : 'your route'}: about ${rand(suggested)} a month (fuel + wear, split by seats).`} />
           <button type="button" className="btn-text" onClick={() => updateDriver({ monthlyContribution: suggested })}>Use suggested {rand(suggested)}</button>
         </div>
-        {routeErr && <Banner tone="warning">{routeErr}. You can still finish; we’ll retry when you open My Route.</Banner>}
+        {!route && !routeErr && <p className="small muted" role="status">Calculating your driving route…</p>}
+        {routeErr && <Banner tone="error" action={<button className="btn-text" onClick={()=>setRouteAttempt(n=>n+1)}>Retry route</button>}>{routeErr}. Your route must load before you can finish.</Banner>}
       </div>
     </OnboardShell>
   )

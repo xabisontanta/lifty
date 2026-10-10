@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react'
 import {useNavigate} from 'react-router-dom'
-import {api,isLive,type CommuteInstance} from '@/services/api'
+import {api,type CommuteInstance} from '@/services/api'
 import {useAsync} from '@/hooks/useAsync'
 import {useTracking} from '@/hooks/useTracking'
 import {useDriverLegs} from '@/hooks/useClubs'
@@ -12,11 +12,11 @@ import {Banner,Card,CardSkeleton,ErrorState,LiftyButton,Screen,ScreenBody,Screen
 import {shareCommute} from '@/services/share'
 
 export function DriverControls({seatsOnly=false}:{seatsOnly?:boolean}){
- const nav=useNavigate(),toast=useToast(),{state,update,updateDriver}=useApp(),q=useDriverLegs()
+ const nav=useNavigate(),toast=useToast(),{state,update}=useApp(),q=useDriverLegs()
  const [index,setIndex]=useState(0),leg=q.legs[index]
  const [seats,setSeats]=useState(''),[deviation,setDeviation]=useState(''),[amount,setAmount]=useState(''),[busy,setBusy]=useState(false)
  useEffect(()=>{if(leg){setSeats(String(leg.seatsOpen+leg.members.length));setDeviation(String(leg.maxDeviationMin));setAmount(String(leg.monthlyContribution))}},[leg])
- async function save(){if(!leg)return;setBusy(true);try{await api.saveDriverSettings(leg.legId,{seats:Number(seats),maxDeviationMin:Number(deviation),monthlyContribution:Number(amount)});if(!isLive())updateDriver({seatsOpen:Number(seats),monthlyContribution:Number(amount),commute:{...state.driver.commute,maxDeviationMin:Number(deviation)}});q.retry();toast('Driver settings published','success')}catch(e){toast(e instanceof Error?e.message:'Could not save','error')}finally{setBusy(false)}}
+ async function save(){if(!leg)return;setBusy(true);try{await api.saveDriverSettings(leg.legId,{seats:Number(seats),maxDeviationMin:Number(deviation),monthlyContribution:Number(amount)});q.retry();toast('Driver settings published','success')}catch(e){toast(e instanceof Error?e.message:'Could not save','error')}finally{setBusy(false)}}
  async function preference(input:{location?:boolean;lowData?:boolean}){if(input.location===false)update({sharingConsent:false});try{await api.setConsent(input);if(input.location!==undefined)update({sharingConsent:input.location});if(input.lowData!==undefined)update({lowData:input.lowData})}catch(e){toast(e instanceof Error?e.message:'Could not save preference','error')}}
  return <Screen><ScreenHeader title={seatsOnly?'Seat availability':'Driver settings'} onBack={()=>nav(-1)}/><ScreenBody>
  {q.loading?<CardSkeleton/>:q.error?<ErrorState message={q.error.message} onRetry={q.retry}/>:<div className="stack-3">
@@ -30,8 +30,8 @@ export function DriverControls({seatsOnly=false}:{seatsOnly?:boolean}){
 }
 export function DriverLiveTrip(){
  const nav=useNavigate(),q=useAsync(()=>api.getCurrentInstance(),[])
- if(q.loading)return <Screen><ScreenBody><CardSkeleton/></ScreenBody></Screen>
- if(q.error)return <Screen><ScreenBody><ErrorState message={q.error.message} onRetry={q.retry}/></ScreenBody></Screen>
+ if(q.loading)return <Screen><ScreenHeader title="Today’s commute" onBack={()=>nav(-1)}/><ScreenBody><CardSkeleton/></ScreenBody></Screen>
+ if(q.error)return <Screen><ScreenHeader title="Today’s commute" onBack={()=>nav(-1)}/><ScreenBody><ErrorState message={q.error.message} onRetry={q.retry}/></ScreenBody></Screen>
  if(!q.data)return <Screen><ScreenHeader title="Today's commute" onBack={()=>nav(-1)}/><ScreenBody><Banner tone="info">No active commute. Upcoming trips appear in your history.</Banner></ScreenBody></Screen>
  return <DriverTripBody key={q.data.id} instance={q.data}/>
 }

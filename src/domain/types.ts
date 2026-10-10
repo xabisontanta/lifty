@@ -31,6 +31,7 @@ export interface Vehicle {
 }
 
 export interface UserProfile {
+  isTest?: boolean
   id: string
   firstName: string
   lastInitial: string
@@ -42,6 +43,8 @@ export interface UserProfile {
 }
 
 export interface DriverProfile {
+  /** Server marks isolated test fixtures; never a person’s verification status. */
+  isTest?: boolean
   id: string
   firstName: string
   lastInitial: string
@@ -53,12 +56,14 @@ export interface DriverProfile {
   seatsAvailable: number
   memberSince: string
   completedArrangements: number
+  /** Actual completed commute instances, independent of lift club arrangements. */
+  completedTrips?: number
   routeSummary: string
   reviews: Review[]
   about?: string
   avatarUrl?: string
-  /** % of scheduled pickups attended — no-shows lower it */
-  reliability: number
+  /** Completed / (completed + cancelled) past trips; unknown without history. */
+  reliability: number | null
 }
 
 export interface Review {
@@ -230,6 +235,8 @@ export interface LiftClub {
   destination: Place
   days: Weekday[]
   pickupTime: string
+  /** Arrival quoted when this agreement was accepted, when available. */
+  arrivalTime?: string
   startDate: string
   seatsTotal: number
   seatsTaken: number

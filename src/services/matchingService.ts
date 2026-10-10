@@ -109,7 +109,7 @@ export async function computeMatches(plan: CommutePlan, legs: DriverLeg[], picku
     days: leg.days,
     departureTime: leg.departureTime,
     maxDeviationMin: leg.maxDeviationMin,
-    trustScore: Math.round((leg.driver.rating / 5) * 60 + (leg.driver.reliability / 100) * 40),
+    trustScore: Math.round((leg.driver.rating / 5) * 60 + ((leg.driver.reliability ?? 100) / 100) * 40),
     route: measured.route,
     walking: measured.walking,
   }))

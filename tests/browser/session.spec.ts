@@ -60,17 +60,17 @@ test('a permanent demo flag left by an older build is removed — the app asks t
   expect(await page.evaluate(() => localStorage.getItem('lifty.source'))).toBeNull()
 })
 
-test('demo mode lasts for the current tab only and is clearly flagged, with one tap back to real accounts', async ({ page }) => {
+test('a stale per-tab demo choice is ignored and removed before real sign-in', async ({ page }) => {
   const backend = await fakeBackend(page)
-  await page.addInitScript(() => { if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); sessionStorage.setItem('lifty.source', 'demo') } })
+  await page.addInitScript(() => { sessionStorage.setItem('lifty.source', 'demo') })
   await page.goto('/signin')
-  await expect(page.getByText('Demo mode is on')).toBeVisible()
-  await page.getByRole('button', { name: 'Use real accounts' }).click()
-  await expect(page).toHaveURL(/\/welcome$/)
-  expect(await page.evaluate(() => sessionStorage.getItem('lifty.source'))).toBeNull()
-  await page.getByRole('button', { name: /I already have an account/ }).click()
   await expect(page.getByText('Demo mode is on')).toHaveCount(0)
-  expect(backend.calls.filter((c) => c.includes('/auth/v1/otp'))).toHaveLength(0) // nothing was sent just by switching
+  await expect(page.getByRole('button',{name:'Use real accounts'})).toHaveCount(0)
+  expect(await page.evaluate(() => sessionStorage.getItem('lifty.source'))).toBeNull()
+  await page.getByLabel('Mobile number').fill('820000000')
+  await page.getByRole('button',{name:'Send code'}).click()
+  await expect(page).toHaveURL(/\/otp$/)
+  expect(backend.calls).toContain('POST /auth/v1/otp')
 })
 
 test('an expired login (refresh token rejected) lands on the welcome screen with an explanation, not a spinner or error', async ({ page }) => {

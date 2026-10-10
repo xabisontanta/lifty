@@ -64,6 +64,7 @@ export function MatchCard({ match, rank, onView }: { match: Match; rank?: number
           <Rating value={d.rating} count={d.ratingCount} size="sm" />
           <span className="small muted" style={{ display: 'block' }}>{d.vehicle.make} {d.vehicle.model} · {d.vehicle.colour}</span>
           <span className="match-chips">
+            {d.isTest && <StatusBadge tone="warning">Test driver</StatusBadge>}
             <StatusBadge tone="teal" icon="route">{match.routeOverlap}% route overlap</StatusBadge>
             {d.verification.identity === 'verified' && <StatusBadge tone="success" icon="shieldCheck">Verified</StatusBadge>}
             {match.partial && <StatusBadge tone="warning" icon="calendar">Partial schedule</StatusBadge>}
@@ -119,7 +120,8 @@ export function DriverCard({ driver, onClick, trailing }: { driver: DriverProfil
         <p className="muted small">
           {driver.vehicle.make} {driver.vehicle.model} · {driver.vehicle.colour}
         </p>
-        <div className="row-flex" style={{ marginTop: 4 }}>
+        <div className="row-flex wrap" style={{ marginTop: 4 }}>
+          {driver.isTest && <StatusBadge tone="warning">Test driver</StatusBadge>}
           <Rating value={driver.rating} count={driver.ratingCount} size="sm" />
           {driver.verification.identity === 'verified' && <VerificationBadge label="Verified" />}
         </div>

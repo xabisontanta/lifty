@@ -1,4 +1,5 @@
 import {test,expect,type Page} from '@playwright/test'
+test.use({viewport:{width:390,height:844},timezoneId:'Africa/Johannesburg'})
 const project='kdjzevtryezwbjdgyqaf'
 const id='11111111-1111-4111-8111-111111111111'
 const second='22222222-2222-4222-8222-222222222222'
@@ -19,6 +20,7 @@ async function backend(page:Page,role='passenger'){
   else if(path==='/rest/v1/rpc/get_account_snapshot')body={...snapshot(uid,role),exceptions:[...exceptions]}
   else if(path==='/rest/v1/rpc/get_my_clubs')body={asPassenger:[],asDriver:[]}
   else if(path==='/rest/v1/rpc/get_current_instance')body=null
+  else if(path==='/rest/v1/rpc/get_driver_trip_stats')body={completedTrips:0,reliability:null}
   else if(path==='/rest/v1/rpc/is_admin')body=false
   else if(path==='/auth/v1/logout')body={}
   else if(path==='/rest/v1/schedule_exceptions'){
@@ -41,25 +43,25 @@ test('unauthenticated live routing ignores saved roles and sample accounts',asyn
  await page.goto('/onboarding/driver/1');await expect(page).toHaveURL(/\/welcome$/)
  await expect(page.getByText('Stale sample')).toHaveCount(0)
 })
-test('SMS signup has no password or WhatsApp delivery promise; demo fallback lasts for this tab only',async({page})=>{
+test('SMS signup has no password or demo fallback when phone authentication fails',async({page})=>{
  await page.route('**/auth/v1/otp',r=>r.fulfill({status:422,contentType:'application/json',body:JSON.stringify({error_code:'phone_provider_disabled',msg:'Phone signups are disabled'})}))
  await page.goto('/role');await page.getByRole('radio',{name:/Passenger/}).click();await page.getByRole('button',{name:'Continue',exact:true}).click()
  await expect(page.locator('input[type=password]')).toHaveCount(0);await expect(page.getByText(/WhatsApp/)).toHaveCount(0)
  await page.getByLabel('Full name').fill('Browser Fixture');await page.getByLabel('Mobile number',{exact:true}).fill('0000000000')
  await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Create Account',exact:true}).click()
- await expect(page.getByText('Phone sign-in isn’t switched on yet')).toBeVisible()
- await page.getByRole('button',{name:'Use demo'}).click();await expect(page).toHaveURL(/\/otp$/)
- await page.getByLabel('Digit 1',{exact:true}).fill('123456');await page.getByRole('button',{name:/^(Continue|Verify & Continue)$/}).click()
- await expect(page).toHaveURL(/\/onboarding\/passenger\/1$/)
- // demo is a per-tab choice: never saved permanently, or a normal tab would stay stuck in it (private tabs worked, normal ones did not)
- expect(await page.evaluate(()=>[sessionStorage.getItem('lifty.source'),localStorage.getItem('lifty.source')])).toEqual(['demo',null])
+ await expect(page.getByText('Phone sign-in isn’t available yet')).toBeVisible()
+ await expect(page.getByRole('button',{name:'Use demo'})).toHaveCount(0)
+ await expect(page).toHaveURL(/\/signup$/)
+ expect(await page.evaluate(()=>[sessionStorage.getItem('lifty.source'),localStorage.getItem('lifty.source')])).toEqual([null,null])
 })
+
 test('mocked returning account restores server role and preferences and clears logout',async({page})=>{
  await backend(page)
  await page.addInitScript(({session,project})=>{if(localStorage.getItem('lifty.browser.fixture.seeded'))return;localStorage.setItem('lifty.browser.fixture.seeded','true');localStorage.setItem('lifty.source',JSON.stringify('live'));localStorage.setItem('sb-'+project+'-auth-token',JSON.stringify(session));localStorage.setItem('lifty.state.v1',JSON.stringify({role:'driver',onboarded:true,user:{id:'me',fullName:'Stale sample'}}))},{session:session(id),project})
  await page.goto('/p/profile');await expect(page.getByRole('heading',{name:'Browser Fixture'})).toBeVisible()
  await expect(page.getByRole('switch',{name:'Live location during commutes'})).not.toBeChecked()
  await expect(page.getByText('Become a driver')).toHaveCount(0)
+ await expect(page.getByText('Data & demo tools')).toHaveCount(0);await expect(page.getByRole('button',{name:/Switch to demo|Reset this device/})).toHaveCount(0)
  await page.getByRole('button',{name:'Sign out'}).click();await expect(page).toHaveURL(/\/welcome$/)
  await page.goto('/p/profile');await expect(page).toHaveURL(/\/welcome$/)
  await page.evaluate(({s,p})=>localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s)),{s:session(second),p:project})
@@ -145,3 +147,93 @@ test('rating submits the exact completed instance and its actual driver',async({
  expect(submitted).toMatchObject({rater_id:id,ratee_id:second,leg_id:trip.legId,instance_id:trip.id,stars:5})
 })
 
+
+test('driver rating load failure has an error and a working retry',async({page})=>{
+ await backend(page,'driver')
+ let failProfile=true
+ await page.route('**/rest/v1/profiles*',route=>route.fulfill({status:failProfile?500:200,contentType:'application/json',body:JSON.stringify(failProfile?{message:'Could not load driver reviews'}:{id,role:'driver',first_name:'Browser',last_initial:'Q',rating:4.8,rating_count:12,created_at:'2026-10-01T00:00:00Z',vehicles:[]})}))
+ await page.route('**/rest/v1/rpc/driver_verification',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({identity:'verified',licence:'verified',vehicle:'verified',insurance:'verified'})}))
+ await page.addInitScript(({s,p})=>localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s)),{s:session(id),p:project})
+ await page.goto('/d/ratings');await expect(page.getByText('Could not load driver reviews',{exact:true})).toBeVisible()
+ failProfile=false;await page.getByRole('button',{name:/Retry|Try again/}).click()
+ await expect(page.getByLabel('Rated 4.8 out of 5 from 12 ratings')).toBeVisible()
+})
+
+test('public driver history uses actual completed trips and keeps unknown reliability explicit',async({page})=>{
+ await backend(page)
+ let history={completedTrips:0,reliability:null as number|null}
+ await page.route('**/rest/v1/rpc/get_driver_trip_stats',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(history)}))
+ await page.route('**/rest/v1/profiles*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:second,role:'driver',first_name:'Second',last_initial:'D',rating:4.5,rating_count:1,completed_arrangements:42,created_at:'2026-10-01T00:00:00Z',vehicles:[]})}))
+ await page.route('**/rest/v1/rpc/driver_verification',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({identity:'verified',licence:'verified',vehicle:'verified',insurance:'verified'})}))
+ await page.addInitScript(({s,p})=>localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s)),{s:session(id),p:project})
+ await page.goto('/p/driver/'+second)
+ const count=page.locator('.metric').filter({hasText:'Completed trips'}).locator('.metric-value')
+ await expect(count).toHaveText('0')
+ await expect(page.getByText('No trip history yet',{exact:true})).toBeVisible()
+ await expect(page.getByText(/null%|100% reliable/)).toHaveCount(0)
+ history={completedTrips:5,reliability:80}
+ await page.reload()
+ await expect(count).toHaveText('5')
+ await expect(page.getByText('80% reliable',{exact:true})).toBeVisible()
+})
+
+test('a request deep link restores that UUID and never substitutes another saved request',async({page})=>{
+ await backend(page)
+ const requestId='77777777-7777-4777-8777-777777777777'
+ let queried=''
+ await page.route('**/rest/v1/join_requests*',async route=>{
+  const url=new URL(route.request().url())
+  if(url.searchParams.get('select')==='id,leg_id,status,created_at,start_date'){
+   queried=url.searchParams.get('id')??''
+   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:requestId,leg_id:second,status:'declined',created_at:'2026-10-01T00:00:00Z',start_date:'2026-10-12'})})
+  }else await route.fulfill({status:200,contentType:'application/json',body:'[]'})
+ })
+ await page.addInitScript(({s,p})=>localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s)),{s:session(id),p:project})
+ await page.goto('/p/sent?request='+requestId)
+ await expect(page.getByText('Not a fit this time',{exact:true})).toBeVisible()
+ expect(queried).toBe('eq.'+requestId)
+ await expect(page.getByRole('button',{name:'Find More Lift Clubs'})).toBeVisible()
+})
+
+test('390px profile has usable settings and no demo tools',async({page})=>{
+ await backend(page)
+ await page.addInitScript(({s,p})=>localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s)),{s:session(id),p:project})
+ await page.goto('/p/profile');await expect(page.getByRole('heading',{name:'Browser Fixture'})).toBeVisible()
+ await expect(page.getByText('Data & demo tools')).toHaveCount(0)
+ await expect(page.getByRole('button',{name:/Switch to demo|Reset this device/})).toHaveCount(0)
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=390)).toBe(true)
+ await page.screenshot({path:'test-results/screenshots/profile-backend-fixture-390.png',fullPage:true})
+ await page.getByRole('button',{name:'Sign out'}).scrollIntoViewIfNeeded()
+ await page.screenshot({path:'test-results/screenshots/profile-settings-backend-fixture-390.png'})
+ await page.getByRole('button',{name:'Sign out'}).click();await expect(page).toHaveURL(/\/welcome$/)
+ await page.getByRole('button',{name:'Get Started'}).click();await page.getByRole('radio',{name:/Passenger/}).click();await page.getByRole('button',{name:'Continue',exact:true}).click()
+ await page.screenshot({path:'test-results/screenshots/signup-390.png',fullPage:true})
+})
+
+test('no-match actions keep the walking cap and edit the actual evening departure',async({page})=>{
+ await backend(page)
+ const evening={direction:'to_home',origin_label:'Umhlanga',destination_label:'Salt Rock',originPoint:{coordinates:[31.06,-29.72]},destinationPoint:{coordinates:[31.23,-29.52]},days:[0,1,2,3,4],arrive_by:'17:00:00',window_min:15,max_walk_m:1000,skip_holidays:true,start_date:'2026-10-09',specific_dates:null}
+ await page.route('**/rest/v1/rpc/get_account_snapshot',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({...snapshot(id),commutes:[evening]})}))
+ await page.addInitScript(({s,p})=>localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s)),{s:session(id),p:project})
+ await page.goto('/p/no-match')
+ await expect(page.getByRole('button',{name:/Maximum walking distance reached/})).toBeDisabled()
+ await page.getByRole('button',{name:/Adjust leaving time/}).click()
+ const time=page.getByLabel('Leave work after',{exact:true})
+ await expect(time).toHaveValue('17:00')
+ await time.selectOption('17:30')
+ await expect(time).toHaveValue('17:30')
+})
+
+test('the commute summary picks up the driver confirmation by itself, without a Refresh tap',async({page})=>{
+ await backend(page)
+ let confirmed=false
+ const trip=()=>({id:'55555555-5555-4555-8555-555555555555',legId:'66666666-6666-4666-8666-666666666666',direction:'to_work',date:'2026-10-07',departsAt:'2026-10-07T04:30:00Z',status:confirmed?'completed':'underway',driverId:second,driverName:'Second',pickupLabel:'Pickup',destinationLabel:'Work',canRate:confirmed,rated:false})
+ await page.route('**/rest/v1/rpc/get_commute_history',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify([trip()])}))
+ await page.addInitScript(({s,p})=>{localStorage.setItem('lifty.source',JSON.stringify('live'));localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s))},{s:session(id),p:project})
+ await page.goto('/p/complete?instance='+trip().id)
+ await expect(page.getByRole('heading',{name:'Awaiting driver completion'})).toBeVisible()
+ await expect(page.getByRole('button',{name:'Rate this commute'})).toHaveCount(0)
+ confirmed=true // the driver finishes the commute; the rider does nothing
+ await expect(page.getByRole('heading',{name:'Commute completed'})).toBeVisible({timeout:15_000})
+ await expect(page.getByRole('button',{name:'Rate this commute'})).toBeVisible()
+})

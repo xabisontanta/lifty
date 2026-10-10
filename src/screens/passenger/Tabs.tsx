@@ -1,19 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
-import { MapView, PickupMarker, DestinationMarker, RouteLine, PassengerMarker, LocationDot } from '@/components/map/MapView'
+import { MapView, PickupMarker, DestinationMarker, SavedLocationMarker, LocationDot } from '@/components/map/MapView'
 import { PaymentBadge } from '@/components/match/cards'
 import { AvatarStack, CallButton, VehiclePhotoCard } from '@/components/ui/extras'
 import { Icon } from '@/components/ui/Icon'
 import { Avatar, BottomNavigation, Card, CardSkeleton, EmptyState, ErrorState, IconButton, LiftyButton, Modal, ProfileRow, Screen, ScreenBody, SecondaryButton, SectionTitle, Segmented, StatusBadge, TextButton, Toggle, useToast, Select, DayPicker } from '@/components/ui/kit'
-import { MAIN_ROUTE, PICKUP_SHELL } from '@/data/mock'
 import type { LiftClub } from '@/domain/types'
 import { addMinutes, formatDate, formatDays, formatDistance, greeting, rand, timeAgo, walkLabel } from '@/lib/format'
 import { nextClubCommute } from '@/lib/club'
+import { validCoordinate } from '@/lib/mapLocation'
 import { useApp } from '@/store/app'
 import { useAsync } from '@/hooks/useAsync'
 import { usePassengerClubs } from '@/hooks/useClubs'
-import { api, isLive, type AppNotification } from '@/services/api'
-import { DevTools } from '../shared/Shared'
+import { api, type AppNotification } from '@/services/api'
 
 export const WALK_M_PER_MIN = 70
 
@@ -60,12 +59,14 @@ export function PassengerHome() {
   const { club } = usePassengerClubs()
   const { user, plan, request } = state
   const home = plan.origin.location
+  const homeReady = !!plan.origin.label.trim() && validCoordinate(home)
+  const destinationReady = !!plan.destination.label.trim() && validCoordinate(plan.destination.location)
   // pickup points near where the user actually is (after auto-locate), else near home
   const [here, setHere] = useState<{ lat: number; lng: number } | null>(null)
-  const centre = here ?? home
-  const { data: points } = useAsync(() => api.listPickupPoints(centre), [state.user?.id, centre.lat.toFixed(3), centre.lng.toFixed(3)])
+  const centre = here ?? (homeReady ? home : null)
+  const { data: points } = useAsync(() => centre ? api.listPickupPoints(centre) : Promise.resolve([]), [state.user?.id, centre?.lat.toFixed(3), centre?.lng.toFixed(3)])
   const next = club ? nextClubCommute(club, state.exceptions) : null
-  const pins = (points ?? []).slice(0, 6)
+  const pins = (points ?? []).filter(p => validCoordinate(p.location)).slice(0, 6)
   return (
     <ScreenBody>
       <div className="home-greeting">
@@ -120,15 +121,14 @@ export function PassengerHome() {
       )}
 
       <div className="map-frame" style={{ marginTop: 12 }}>
-        <MapView fit={pins.length ? [home, ...pins.map((p) => p.location)] : [home, plan.destination.location]} height={320} padding={50} label="Your area with nearby pickup points" locate autoLocate onLocate={setHere}>
-          {pins.length === 0 && !isLive() && <RouteLine path={MAIN_ROUTE} animate={false} />}
+        <MapView fit={[...(homeReady ? [home] : []), ...pins.map(p => p.location), ...(!pins.length && destinationReady ? [plan.destination.location] : [])]} height={320} padding={50} label="Your area with nearby pickup points" locate autoLocate onLocate={setHere}>
           {pins.map((p) => <LocationDot key={p.label + p.location.lat} at={p.location} color="#00b386" />)}
-          {!!plan.origin.label && <PassengerMarker at={home} label="Home" />}
-          {pins[0] && <PickupMarker at={pins[0].location} label={pins[0].label} />}
-          {pins.length === 0 && !!plan.destination.label && <DestinationMarker at={plan.destination.location} label={plan.destination.label} />}
+          {homeReady && <SavedLocationMarker at={home} label="Saved home" />}
+          {plan.preferredPickup && validCoordinate(plan.preferredPickup.location) && <PickupMarker at={plan.preferredPickup.location} label={`Selected pickup: ${plan.preferredPickup.label}`} />}
+          {pins.length === 0 && destinationReady && <DestinationMarker at={plan.destination.location} label={plan.destination.label} />}
         </MapView>
       </div>
-      <p className="small muted" style={{ margin: '8px 4px 0' }}><Icon name="pin" size={14} /> Green dots are community pickup points near you — garages, centres and safe meeting spots.</p>
+      <p className="small muted" style={{ margin: '8px 4px 0' }}><Icon name="pin" size={14} /> Blue is your current device location. Purple is your saved home. Green dots are community pickup points.</p>
 
       <SectionTitle>Quick actions</SectionTitle>
       <div className="list">
@@ -201,7 +201,6 @@ function ClubLeg({ club }: { club: LiftClub }) {
   const { state } = useApp()
   const d = club.driver
   const next = nextClubCommute(club, state.exceptions)
-  const dropOff = addMinutes(club.pickupTime, 60)
   const others = club.members.filter((m) => m.role === 'passenger' && m.id !== state.user?.id)
   return (
     <div className="stack-3">
@@ -211,6 +210,7 @@ function ClubLeg({ club }: { club: LiftClub }) {
           <div className="grow">
             <button className="h3 btn-text" style={{ padding: 0, minHeight: 28, color: 'var(--text)' }} onClick={() => nav(`/p/driver/${d.id}`)}>{d.firstName} {d.lastInitial}.</button>
             <p className="small muted"><Icon name="star" size={12} filled style={{ color: '#f59e0b' }} /> {d.rating.toFixed(1)} ({d.ratingCount})</p>
+            {d.isTest&&<StatusBadge tone="warning">Test driver</StatusBadge>}
           </div>
           <CallButton name={d.firstName} chatId={club.matchId} className="icon-btn" />
           <IconButton icon="message" label={`Message ${d.firstName}`} onClick={() => nav(`/chat/${club.matchId}`, { state: { name: `${d.firstName} ${d.lastInitial}.` } })} />
@@ -221,7 +221,7 @@ function ClubLeg({ club }: { club: LiftClub }) {
           <strong>{club.pickupTime}</strong>
           <span className="dotcol"><i className="end" /></span>
           <div><p className="small muted">Drop-off at</p><strong>{club.destination.label}</strong></div>
-          <span className="small muted">~{dropOff}</span>
+          <span className="small muted">{club.arrivalTime?`~${club.arrivalTime}`:'Confirm arrival with your driver'}</span>
         </div>
         <div className="kv-list">
           <div className="kv"><span className="kv-k"><Icon name="calendar" size={16} /> {club.schedule?.scheduleMode === 'dates' ? `${club.schedule.dates.length} agreed dates` : formatDays(club.schedule?.days ?? club.days)}</span><span className="kv-v">from {formatDate(club.schedule?.startDate ?? club.startDate).replace(/^\w+, /, '')}</span></div>
@@ -264,6 +264,7 @@ function ClubLeg({ club }: { club: LiftClub }) {
 export function Inbox() {
   const nav = useNavigate()
   const { state } = useApp()
+  const clubQuery = usePassengerClubs()
   const { data, loading, error, retry } = useAsync(() => api.listNotifications(), [state.user?.id])
   const [items, setItems] = useState<AppNotification[]>([])
   useEffect(() => {
@@ -271,10 +272,12 @@ export function Inbox() {
     if (data?.some((n) => !n.read)) void api.markNotificationsRead()
   }, [data])
   useEffect(() => { setItems([]); return api.subscribeNotifications((n) => setItems((x) => [n, ...x])) }, [state.user?.id])
-  const chats = [state.club, state.returnClub].filter(Boolean) as LiftClub[]
+  const chats = [clubQuery.club, clubQuery.returnClub].filter(Boolean) as LiftClub[]
   return (
     <ScreenBody>
       <div className="title-block"><h1>Messages</h1><p>Your lift club chat and commute updates.</p></div>
+      {clubQuery.loading&&<CardSkeleton/>}
+      {clubQuery.error&&<ErrorState message={clubQuery.error.message} onRetry={clubQuery.retry}/>}
       {chats.length > 0 && (
         <>
           <SectionTitle>Lift club chat</SectionTitle>
@@ -304,7 +307,6 @@ export function PassengerProfile() {
   const toast=useToast()
   const nav = useNavigate()
   const { state, update, reset } = useApp()
-  const [switching, setSwitching] = useState(false)
   const [savingLowData, setSavingLowData] = useState(false)
   const { data: admin } = useAsync(() => api.isAdmin(), [state.user?.id])
   const u = state.user
@@ -317,7 +319,7 @@ export function PassengerProfile() {
           <div className="grow">
             <h2 className="h3">{u?.fullName ?? 'Your name'}</h2>
             <p className="small muted">{state.phone}</p>
-            <div className="row-flex wrap"><StatusBadge tone="teal" icon="user">Passenger</StatusBadge>{!isLive() && <StatusBadge tone="warning">Demo mode</StatusBadge>}</div>
+            <div className="row-flex wrap"><StatusBadge tone="teal" icon="user">Passenger</StatusBadge></div>
           </div>
         </div>
       </Card>
@@ -357,15 +359,8 @@ export function PassengerProfile() {
       <ProfileRow icon="calendar" title="Commute history" onClick={()=>nav('/history')} />
       <SectionTitle>Account</SectionTitle>
       <div className="list">
-        {!isLive() && <ProfileRow icon="car" title="Become a driver" subtitle="Needs a short driver set-up" onClick={() => setSwitching(true)} />}
         <ProfileRow icon="logout" title="Sign out" danger onClick={async () => {try{await api.signOut();reset();nav('/welcome',{replace:true})}catch(e){toast(e instanceof Error?e.message:'Could not sign out. Retry.','error')}}} />
       </div>
-      <DevTools />
-      <Modal open={switching} onClose={() => setSwitching(false)} title="Switch to driver?">
-        <p className="muted">Driving is a separate role. You’ll complete vehicle, licence and document verification before you can offer seats. Your passenger lift club stays as it is until you change it.</p>
-        <LiftyButton onClick={() => { update({ role: 'driver', onboarded: false }); nav('/onboarding/driver/1') }}>Start driver set-up</LiftyButton>
-        <SecondaryButton onClick={() => setSwitching(false)}>Not now</SecondaryButton>
-      </Modal>
     </ScreenBody>
   )
 }

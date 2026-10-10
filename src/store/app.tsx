@@ -10,8 +10,7 @@ import type {
   UserProfile,
   Weekday,
 } from '@/domain/types'
-import { DEFAULT_PLAN, HOME, WORK } from '@/data/mock'
-import { api, getDataSource, isLive, type AccountSnapshot } from '@/services/api'
+import { api, isLive, type AccountSnapshot } from '@/services/api'
 import { supabase } from '@/services/supabase'
 import { clearLiveCaches } from '@/services/liveApi'
 import { setNotice, wasDeliberateSignOut } from '@/lib/notice'
@@ -79,24 +78,24 @@ export const initialState: AppState = {
   phone: '',
   verified: false,
   onboarded: false,
-  plan: DEFAULT_PLAN,
-  prefs: { homeAddress: HOME.label + ', Ballito', workAddress: WORK.area, preferredPickup: 'Shell Garage, Ballito' },
+  plan: { direction:'to_work', origin:{label:'',area:'',location:{lat:0,lng:0}}, destination:{label:'',area:'',location:{lat:0,lng:0}}, days:[0,1,2,3,4], arriveBy:'08:00', arriveWindowStart:'07:45', returnTime:'17:00', maxWalkMeters:750, scheduleMode:'weekly', startDate:'', dates:[], skipHolidays:true },
+  prefs: { homeAddress: '', workAddress: '', preferredPickup: '' },
   request: null,
   club: null,
   returnClub: null,
   lowData: false,
   exceptions: [],
-  paymentMethodId: 'pm-card',
+  paymentMethodId: '',
   savedAlert: false,
-  sharingConsent: true,
+  sharingConsent: false,
   emergencyContact: '',
   ratedMatchIds: [],
   driver: {
-    vehicle: { registration: 'ND 123 456', make: 'Toyota', model: 'Corolla', year: '2019', colour: 'Silver', seats: 3, bodyType: 'sedan' },
+    vehicle: { registration: '', make: '', model: '', year: '', colour: '', seats: 3, bodyType: 'sedan' },
     docs: { id: false, licence: false, registration: false, insurance: false },
     commute: {
-      origin: 'Ballito, KwaDukuza',
-      destination: 'Umhlanga Ridge, Durban',
+      origin: '',
+      destination: '',
       offerReturn: true,
       departure: '06:30',
       returnTime: '17:00',
@@ -104,8 +103,8 @@ export const initialState: AppState = {
       maxDeviationMin: 8,
     },
     seatsOpen: 2,
-    members: [{ id: 'pax-lindiwe', firstName: 'Lindiwe', lastInitial: 'S', avatarHue: 300, role: 'passenger', paymentStatus: 'paid' }],
-    monthlyContribution: 1100,
+    members: [],
+    monthlyContribution: 0,
   },
 }
 
@@ -118,19 +117,7 @@ export function freshLiveState(): AppState {
  driver:{ ...initialState.driver, vehicle:{registration:'',make:'',model:'',year:'',colour:'',seats:3,bodyType:'sedan'}, members:[], monthlyContribution:0,
  commute:{...initialState.driver.commute,origin:'',destination:'',originPlace:undefined,destinationPlace:undefined} } }
 }
-function load(): AppState {
-  if (getDataSource()==='live') return freshLiveState()
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (raw) {
-      const saved = JSON.parse(raw)
-      return { ...initialState, ...saved, plan: { ...initialState.plan, ...saved.plan }, driver: { ...initialState.driver, ...saved.driver, vehicle: { ...initialState.driver.vehicle, ...saved.driver?.vehicle }, commute: { ...initialState.driver.commute, ...saved.driver?.commute } } }
-    }
-  } catch {
-    /* storage unavailable or corrupt — start fresh */
-  }
-  return initialState
-}
+function load(): AppState { return freshLiveState() }
 
 interface Ctx {
   state: AppState
@@ -147,15 +134,6 @@ const AppContext = createContext<Ctx | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(load)
-
-  useEffect(() => {
-    if (isLive()) return
-    try {
-      localStorage.setItem(KEY, JSON.stringify(state))
-    } catch {
-      /* ignore */
-    }
-  }, [state])
 
   const generation = useRef(0)
   const applySnapshot = useCallback((snapshot: AccountSnapshot | null) => {
@@ -251,7 +229,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
     disposeTrackingFeeds(); clearLiveCaches(); ++generation.current
-    setState(isLive()?{...freshLiveState(),authReady:true}:initialState)
+    setState({...freshLiveState(),authReady:true})
   }, [])
 
   const value = useMemo(

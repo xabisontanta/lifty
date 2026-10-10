@@ -6,67 +6,14 @@ import {
   Banner, BottomSheet, Card, CardSkeleton, EmptyState, ErrorState, LiftyButton, Modal, ProfileRow, Screen, ScreenBody, ScreenHeader, SecondaryButton, SectionTitle,
   StatusBadge, TextButton, Toggle, useToast, TextField, Select,
 } from '@/components/ui/kit'
-import { MATCHES, PAYMENT_METHODS } from '@/data/mock'
+import { PAYMENT_METHODS } from '@/data/mock'
 import type { ExceptionKind } from '@/domain/types'
 import { isoDate, rand, timeAgo } from '@/lib/format'
-import { hasSupabase } from '@/lib/env'
 import { useAsync } from '@/hooks/useAsync'
-import { api, getDataSource, getSimulation, isLive, setDataSource, setSimulation, type ChatMessage, type PendingDocument, type SafetyReport, type Simulation } from '@/services/api'
-import { getTrackingFeed } from '@/services/tracking'
+import { api, type ChatMessage, type PendingDocument, type SafetyReport } from '@/services/api'
 import {mergeMessages} from '@/lib/chat'
 import {exportArchive} from '@/services/dataExport'
 import { useApp } from '@/store/app'
-
-/* ---------- Developer / demo tools ---------- */
-export function DevTools() {
-  const toast = useToast()
-  const { reset } = useApp()
-  const [sim, setSim] = useState<Simulation>(getSimulation())
-  const [linkDown, setLinkDown] = useState(false)
-  const source = getDataSource()
-  const change = (s: Simulation) => {
-    setSimulation(s)
-    setSim(s)
-    toast(s === 'none' ? 'Network simulation off' : `Simulating: ${s}`)
-  }
-  return (
-    <>
-      <SectionTitle>Data & demo tools</SectionTitle>
-      <Card>
-        <div className="row-flex between">
-          <div>
-            <strong>{source === 'live' ? 'Live data' : 'Demo data'}</strong>
-            <p className="small muted">{source === 'live' ? 'Connected to the Lifty backend.' : 'Sample drivers and a simulated commute, stored on this device.'}</p>
-          </div>
-          {hasSupabase && (
-            <TextButton onClick={() => { setDataSource(source === 'live' ? 'demo' : 'live'); reset(); window.location.assign('/welcome') }}>
-              Switch to {source === 'live' ? 'demo' : 'live'}
-            </TextButton>
-          )}
-        </div>
-        {source === 'demo' && (
-          <>
-            <p className="small muted" style={{ margin: '14px 0 10px' }}>Exercise loading, error and offline states.</p>
-            <div className="chips" role="radiogroup" aria-label="Network simulation">
-              {(['none', 'fail', 'offline'] as Simulation[]).map((s) => (
-                <button key={s} type="button" role="radio" aria-checked={sim === s} className={`chip ${sim === s ? 'on' : ''}`} onClick={() => change(s)}>
-                  {s === 'none' ? 'Normal' : s === 'fail' ? 'API errors' : 'Offline'}
-                </button>
-              ))}
-            </div>
-            <div className="row-flex between" style={{ marginTop: 14 }}>
-              <span className="small">Drop live-location link</span>
-              <Toggle label="Drop live-location link" checked={linkDown} onChange={(v) => { setLinkDown(v); MATCHES.forEach((m) => getTrackingFeed(m).setLinkDown(v)) }} />
-            </div>
-          </>
-        )}
-        <div style={{ marginTop: 14 }}>
-          <SecondaryButton size="sm" tone="danger" icon="refresh" onClick={() => { reset(); window.location.assign('/welcome') }}>Reset this device</SecondaryButton>
-        </div>
-      </Card>
-    </>
-  )
-}
 
 /* ---------- 18 Payment methods & contributions (tracked in v1) ---------- */
 export function Payments() {
@@ -458,7 +405,7 @@ export function Admin() {
 
   return (
     <Screen>
-      <ScreenHeader title="Admin console" subtitle={isLive() ? 'Live data' : 'Demo data'} onBack={() => nav(-1)} />
+      <ScreenHeader title="Admin console" subtitle="Driver verification and safety" onBack={() => nav(-1)} />
       <ScreenBody>
         <SectionTitle>Pilot operations</SectionTitle>
         {health.error&&<ErrorState message={health.error.message} onRetry={health.retry}/>}

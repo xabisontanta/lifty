@@ -48,6 +48,7 @@ function toDriver(d: J, v: J, seatsAvailable = 0, routeSummary = ''): DriverProf
   const status = vStatus(d?.identityStatus)
   return {
     id: d.id,
+    isTest: d.isTest === true || d.is_test === true,
     firstName: d.firstName,
     lastInitial: d.lastInitial ?? '',
     avatarHue: hueFor(d.id),
@@ -68,10 +69,11 @@ function toDriver(d: J, v: J, seatsAvailable = 0, routeSummary = ''): DriverProf
     seatsAvailable,
     memberSince: d.memberSince ?? isoDate(0),
     completedArrangements: Number(d.completedArrangements ?? 0),
+    completedTrips: Number(d.completedTrips ?? 0),
     routeSummary,
     reviews: [],
     about: d.about ?? undefined,
-    reliability: Number(d.reliability ?? 100),
+    reliability: d.reliability == null ? null : Number(d.reliability),
   }
 }
 
@@ -130,7 +132,7 @@ function fail(e: { message?: string; code?: string } | null, fallback = 'Somethi
   if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new ApiError("You're offline. Check your connection and try again.", 'offline')
   if (/JWT|not authenticated|Auth session missing/i.test(msg)) throw new ApiError('Your session has expired. Please sign in again.', 'auth')
   if (/phone.*provider|Unsupported phone provider|sms.*disabled|phone_provider_disabled|phone signups are disabled|signups not allowed/i.test(msg))
-    throw new ApiError('Phone sign-in isn’t switched on for this Lifty project yet. You can explore Lifty in demo mode meanwhile.', 'not-configured')
+    throw new ApiError('Phone sign-in is unavailable right now. Please try again later.', 'not-configured')
   throw new ApiError(msg.replace(/^.*?ERROR:\s*/, ''), 'server')
 }
 
@@ -194,7 +196,7 @@ function toInstance(j: J): CommuteInstance {
       pickupTime: r.pickupTime,
       driverArrivedAt:r.driverArrivedAt?new Date(r.driverArrivedAt).getTime():null,passengerAtPickup:!!r.passengerAtPickup,collectedAt:r.collectedAt?new Date(r.collectedAt).getTime():null,noShowAt:r.noShowAt?new Date(r.noShowAt).getTime():null,
     })),
-    driver: { id: j.driver.id, firstName: j.driver.firstName, lastInitial: j.driver.lastInitial, rating: Number(j.driver.rating), ratingCount: Number(j.driver.ratingCount), avatarHue: hueFor(j.driver.id),verification:j.driver.verification },
+    driver: { isTest: j.driver.isTest === true || j.driver.is_test === true, id: j.driver.id, firstName: j.driver.firstName, lastInitial: j.driver.lastInitial, rating: Number(j.driver.rating), ratingCount: Number(j.driver.ratingCount), avatarHue: hueFor(j.driver.id),verification:j.driver.verification, completedTrips: Number(j.driver.completedTrips ?? 0), reliability: j.driver.reliability == null ? null : Number(j.driver.reliability) },
     vehicle: { make: j.vehicle?.make ?? '', model: j.vehicle?.model ?? '', colour: j.vehicle?.colour ?? '', bodyType: j.vehicle?.bodyType ?? 'sedan', registrationSummary: j.vehicle?.registrationSummary ?? '', photoUrl: publicFileUrl('vehicle-photos', j.vehicle?.photoPath) },
   }
 }
@@ -375,7 +377,7 @@ export const liveApi: LiftyApi = {
     let matches: Match[]
     try {
       // road-routed matching on the server: drivers' full routes never reach the phone
-      const { data, error } = await sb().functions.invoke('find-matches', { body: { commuteId, mapboxToken: env.mapboxToken } })
+      const { data, error } = await sb().functions.invoke('find-matches', { body: { commuteId } })
       if (error || !Array.isArray(data?.matches)) throw error ?? new Error('find-matches returned no result')
       matches = (data.matches as J[]).map(toMatch)
       setLastMatchSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [])
@@ -415,12 +417,14 @@ export const liveApi: LiftyApi = {
     throw new ApiError('This lift club is no longer a match for your commute.', 'not-found')
   },
   async getDriver(id) {
-    const { data, error } = await sb().from('profiles').select('id,role,first_name,last_initial,avatar_path,rating,rating_count,identity_status,completed_arrangements,created_at,about,reliability,vehicles(*)').eq('id', id).maybeSingle()
+    const { data, error } = await sb().from('profiles').select('id,role,first_name,last_initial,avatar_path,rating,rating_count,identity_status,completed_arrangements,created_at,about,reliability,is_test,vehicles(*)').eq('id', id).maybeSingle()
     if (error) fail(error)
     if (!data) throw new ApiError('We couldn’t find that driver.', 'not-found')
+    const stats = await pilotRpc('get_driver_trip_stats', { p_driver: id })
+    if (!stats) throw new ApiError('We couldn’t find that driver.', 'not-found')
     const v = Array.isArray(data.vehicles) ? data.vehicles[0] : data.vehicles
     const driver = toDriver(
-      { id: data.id, firstName: data.first_name, lastInitial: data.last_initial, avatarPath: data.avatar_path, rating: data.rating, ratingCount: data.rating_count, identityStatus: data.identity_status, completedArrangements: data.completed_arrangements, memberSince: data.created_at?.slice(0, 10), about: data.about, reliability: data.reliability },
+      { id: data.id, isTest: data.is_test, firstName: data.first_name, lastInitial: data.last_initial, avatarPath: data.avatar_path, rating: data.rating, ratingCount: data.rating_count, identityStatus: data.identity_status, completedArrangements: data.completed_arrangements, completedTrips: stats.completedTrips, memberSince: data.created_at?.slice(0, 10), about: data.about, reliability: stats.reliability },
       v && { make: v.make, model: v.model, colour: v.colour, year: v.year, bodyType: v.body_type, registrationSummary: v.registration_summary, seatsTotal: v.seats_total, photoPath: v.photo_path, status: v.status },
     )
     driver.verification=await pilotRpc('driver_verification',{p_user:id})
@@ -430,6 +434,7 @@ export const liveApi: LiftyApi = {
       .eq('ratee_id', id)
       .order('created_at', { ascending: false })
       .limit(10)
+    if (r.error) fail(r.error)
     driver.reviews = (r.data ?? []).map((x: J) => ({ id: x.id, author: `${x.rater?.first_name ?? 'Member'} ${x.rater?.last_initial ?? ''}.`, stars: x.stars, tags: x.tags ?? [], comment: x.comment ?? undefined, date: x.created_at.slice(0, 10) }))
     return driver
   },
@@ -440,7 +445,7 @@ export const liveApi: LiftyApi = {
     if(!m?.quoteId)throw new ApiError('Refresh your matches before requesting this offer.','invalid')
     const { data, error } = await sb().rpc('request_to_join_quote', { p_commute: commuteId, p_leg: matchId,p_quote:m.quoteId })
     if (error) fail(error)
-    return { id: data as string, matchId, status: 'pending', createdAt: new Date().toISOString(), startDate: isoDate(7) }
+    return liveApi.getJoinRequest(data as string)
   },
   async getJoinRequest(id): Promise<JoinRequest> {
     const { data, error } = await sb().from('join_requests').select('id, leg_id, status, created_at, start_date').eq('id', id).maybeSingle()
@@ -471,6 +476,7 @@ export const liveApi: LiftyApi = {
         destination: toPlace(c.destination),
         days: days(c.days),
         pickupTime: c.pickupTime,
+        arrivalTime: c.arrivalTime ?? undefined,
         startDate: c.startDate,
         seatsTotal: Number(c.vehicle?.seatsTotal ?? 0),
         seatsTaken: Number(c.seatsTaken ?? 0),
@@ -669,6 +675,7 @@ export function instanceToMatch(inst: CommuteInstance, myId?: string): Match & {
     liveInstance: inst,
     driver: {
       id: inst.driver.id,
+      isTest: inst.driver.isTest,
       firstName: inst.driver.firstName,
       lastInitial: inst.driver.lastInitial,
       avatarHue: inst.driver.avatarHue,
@@ -679,9 +686,10 @@ export function instanceToMatch(inst: CommuteInstance, myId?: string): Match & {
       seatsAvailable: 0,
       memberSince: '',
       completedArrangements: 0,
+      completedTrips: inst.driver.completedTrips ?? 0,
       routeSummary: '',
       reviews: [],
-      reliability: 100,
+      reliability: inst.driver.reliability ?? null,
     },
     origin: pickup,
     pickup,

@@ -21,6 +21,9 @@ import { reportError } from './monitoring'
  */
 
 const BROADCAST_EVERY_MS = 4000
+const RESYNC_EVERY_MS = 10_000
+/** A driver on the road publishes every few seconds, so this long a silence on a channel that claims to be connected means it is dead. */
+const CHANNEL_SILENCE_MS = 30_000
 const ARRIVED_RADIUS_M = 150
 
 interface PeerFix extends LatLng {
@@ -45,6 +48,9 @@ export class SupabaseTrackingFeed implements TrackingFeed {
   private me: PeerFix | null = null
   private peer: PeerFix | null = null
   private lastBroadcast = 0
+  private heardAt = 0 // when a position last arrived (local clock)
+  private channelsOpenedAt = 0
+  private lastRebuild = 0
   private linkDown = false
   private riderStatus: string
   private instanceStatus: CommuteInstance['status']
@@ -104,7 +110,21 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     return ok
   }
   setLinkDown(down:boolean){this.linkDown=down}
-  restart(){if(!this.disposed&&!this.stopped) {this.error=null;if(!this.channels.length)void this.startSharing();else void this.refreshAuthorization();this.emit()}}
+  restart(){if(!this.disposed&&!this.stopped) {this.error=null;this.rebuildChannels();void this.resync();this.emit()}}
+  /** Drop the live location channels and subscribe again (the last known positions stay on screen until a new one arrives). */
+  private rebuildChannels(){
+    if(this.disposed||this.stopped)return
+    this.lastRebuild=Date.now()
+    this.channels.forEach((ch)=>void sb().removeChannel(ch));this.channels=[]
+    void this.startSharing()
+  }
+  /** A rider whose driver channel has gone quiet rebuilds it by itself, as a driver would on the road; a driver's riders are often legitimately silent, so they do not. */
+  private healSilentChannel(){
+    if(this.isDriver||!this.channels.length||!this.windowOpen())return
+    const now=Date.now()
+    if(now-Math.max(this.heardAt,this.channelsOpenedAt)<CHANNEL_SILENCE_MS||now-this.lastRebuild<CHANNEL_SILENCE_MS)return
+    this.rebuildChannels()
+  }
   dispose(){this.disposed=true;this.stopSharing();this.timers.forEach(clearInterval);this.timers=[];if(this.windowTimer)clearTimeout(this.windowTimer);if(this.rowChannel)void sb().removeChannel(this.rowChannel);this.listeners.clear()}
 
   // ---------- lifecycle ----------
@@ -123,7 +143,7 @@ export class SupabaseTrackingFeed implements TrackingFeed {
         const r=this.inst.riders.find(r=>r.passengerId===n.passenger_id)
         if(r){r.status=n.status;r.driverArrivedAt=n.driver_arrived_at?new Date(n.driver_arrived_at).getTime():null;this.syncRider();if(!this.isDriver&&n.status!=='expected'&&n.status!=='at_pickup')this.stopOnlyGps();this.emit()}
       })
-      .subscribe()
+      .subscribe((status) => { if (status === 'SUBSCRIBED') void this.resync() }) // anything that changed before the channel was ready
 
     const now = Date.now()
     if (now < this.inst.sharingStartsAt) {
@@ -132,8 +152,9 @@ export class SupabaseTrackingFeed implements TrackingFeed {
       await this.startSharing()
     }
     if(this.disposed)return
-    this.timers.push(setInterval(() => {if(Date.now()>this.inst.sharingEndsAt)this.stopSharing();this.emit()},1000))
+    this.timers.push(setInterval(() => {if(Date.now()>this.inst.sharingEndsAt)this.stopSharing();this.healSilentChannel();this.emit()},1000))
     this.timers.push(setInterval(()=>void this.refreshAuthorization(),5000))
+    this.timers.push(setInterval(()=>void this.resync(),RESYNC_EVERY_MS))
     this.timers.push(setInterval(() => void this.refreshEtas(), this.opts.lowData ? 60000 : 30000))
   }
 
@@ -150,12 +171,45 @@ export class SupabaseTrackingFeed implements TrackingFeed {
         const ch=sb().channel('commute:'+this.inst.id+':'+r.passengerId,{config:{private:true}})
         ch.on('broadcast',{event:'loc'},({payload})=>{
           if(!this.windowOpen()||this.linkDown||payload.from!==expected||!Number.isFinite(payload.lat)||!Number.isFinite(payload.lng))return
-          this.peers.set(expected,payload);this.syncRider();this.emit()
+          this.heardAt=Date.now();this.peers.set(expected,payload);this.syncRider();this.emit()
         }).subscribe(status=>{if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')this.error='Reconnecting live location…';else if(status==='SUBSCRIBED')this.error=null;this.emit()})
-        this.channels.push(ch)
+        this.channels.push(ch);this.channelsOpenedAt=Date.now()
       }
       await this.startGps();void this.refreshEtas()
     }catch(e){reportError(e,{where:'startSharing'});this.error='Could not connect live location';this.emit()}
+  }
+  /**
+   * Safety net for live updates. A row change that lands between loading the trip and the channel finishing its subscription — or
+   * while the connection drops — is never replayed, and the screen would stay on the old state (a rider still "waiting" after the
+   * driver collected them). Re-read this trip's own rows when the channel connects and every few seconds, applying only what differs.
+   */
+  private async resync() {
+    if (this.disposed || this.stopped) return
+    try {
+      const [trip, riders] = await Promise.all([
+        sb().from('commute_instances').select('status').eq('id', this.inst.id).maybeSingle(),
+        sb().from('instance_riders').select('passenger_id, status, driver_arrived_at').eq('instance_id', this.inst.id),
+      ])
+      if (this.disposed || this.stopped) return
+      let changed = false
+      const status = trip.data?.status as CommuteInstance['status'] | undefined
+      if (status && status !== this.instanceStatus) {
+        this.instanceStatus = status
+        changed = true
+        if (status === 'completed' || status === 'cancelled') this.stopSharing()
+      }
+      for (const n of riders.data ?? []) {
+        const r = this.inst.riders.find((x) => x.passengerId === n.passenger_id)
+        if (!r) continue
+        const arrivedAt = n.driver_arrived_at ? new Date(n.driver_arrived_at).getTime() : null
+        if (r.status === n.status && (r.driverArrivedAt ?? null) === arrivedAt) continue
+        r.status = n.status
+        r.driverArrivedAt = arrivedAt
+        changed = true
+        if (!this.isDriver && n.status !== 'expected' && n.status !== 'at_pickup') this.stopOnlyGps()
+      }
+      if (changed) { this.syncRider(); this.emit() }
+    } catch { /* offline, or not allowed right now: the next pass tries again */ }
   }
   private async refreshAuthorization(){
     if(!this.windowOpen()){this.stopSharing();return}

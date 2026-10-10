@@ -14,11 +14,12 @@ import { Inbox, MyCommute, PassengerHome, PassengerProfile, PassengerTabs } from
 import { PlanCommute } from '@/screens/passenger/Plan'
 import { Accepted, Complete, DriverPublicProfile, Finding, MatchDetail, Matches, NoMatch, PassengerTracking, RateDriver, RequestSent } from '@/screens/passenger/Flow'
 import {ContributionLedger,CommuteHistory,ScheduleExceptions} from '@/screens/shared/Pilot'
-import { Admin, Chat, Exceptions, Payments, Privacy, Safety, Terms } from '@/screens/shared/Shared'
-import { Contributions, DriverHome, DriverProfile, DriverSettings, DriverTabs, DriverToday, MyRoute, Ratings, RequestDetail, Requests, Seats } from '@/screens/driver/Driver'
+import { Admin, Chat, Privacy, Safety, Terms } from '@/screens/shared/Shared'
+import { Contributions, DriverHome, DriverProfile, DriverTabs, MyRoute, Ratings, RequestDetail, Requests } from '@/screens/driver/Driver'
 import { DriverInbox } from '@/screens/driver/Inbox'
 import {DriverControls,DriverLiveTrip} from '@/screens/driver/PilotDriver'
 import {currentUserId,sb} from '@/services/supabase'
+import {hasSupabase} from '@/lib/env'
 
 function homeFor(role: string | null, onboarded: boolean): string {
   if (!role) return '/welcome'
@@ -71,6 +72,7 @@ function LiveAlerts() {
 export default function App() {
   const online = useOnline()
   const { state, reset } = useApp()
+  if (!hasSupabase) return <div className="app-frame center" style={{gap:14,padding:24,textAlign:'center'}}><h1>App temporarily unavailable</h1><p role="alert">Lifty’s backend connection has not been configured for this build. Please try again later.</p><button className="btn btn-primary" onClick={()=>location.reload()}>Try again</button></div>
   if (!state.authReady) return <div className="app-frame center" role="status">Restoring your account…</div>
   if (state.authError) return <div className="app-frame center" style={{ gap: 14, padding: 24, textAlign: 'center' }}><p role="alert">{state.authError}</p><button className="btn btn-primary" onClick={()=>location.reload()}>Try again</button><button className="btn btn-text" onClick={async()=>{await api.signOut().catch(()=>undefined);reset()}}>Sign out</button></div>
   return (
@@ -131,7 +133,7 @@ export default function App() {
           <Route path="profile" element={<DriverProfile />} />
         </Route>
         <Route path="/d/request/:id" element={<Guard role="driver"><RequestDetail /></Guard>} />
-        <Route path="/d/today" element={<Guard role="driver">{isLive()?<DriverLiveTrip/>:<DriverToday/>}</Guard>} />
+        <Route path="/d/today" element={<Guard role="driver"><DriverLiveTrip/></Guard>} />
         <Route path="/d/seats" element={<Guard role="driver"><DriverControls seatsOnly /></Guard>} />
         <Route path="/d/contributions" element={<Guard role="driver"><ContributionLedger /></Guard>} />
         <Route path="/d/ratings" element={<Guard role="driver"><Ratings /></Guard>} />

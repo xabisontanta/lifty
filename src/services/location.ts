@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { BackgroundGeolocationPlugin } from '@capacitor-community/background-geolocation'
+import { getForegroundPosition, foregroundLocationPermission } from './foregroundLocation'
 
 /**
  * Device location. On Android/iOS (Capacitor) this uses a background-capable
@@ -73,48 +74,14 @@ export async function watchLocation(onFix: FixListener, onError: ErrorListener, 
   return () => navigator.geolocation.clearWatch(id)
 }
 
-/** Where to re-enable location in a mobile browser — the steps differ per phone. */
-function webLocationHelp() {
-  const ua = navigator.userAgent
-  if (/iPhone|iPad|iPod/.test(ua)) return 'Location is blocked. On iPhone: Settings → Privacy & Security → Location Services → Safari Websites → While Using. Then reload Lifty.'
-  if (/Android/.test(ua)) return 'Location is blocked. In Chrome, tap the icon left of the address → Permissions → Location → Allow. Then reload Lifty.'
-  return 'Location is blocked. Allow location for this site in your browser settings, then reload Lifty.'
-}
-
 /** One-shot fix for "use my location" (foreground). Rejects with a human-readable message. */
 export function getCurrentPosition(timeoutMs = 15000): Promise<DeviceFix> {
-  return new Promise((resolve, reject) => {
-    if (!('geolocation' in navigator)) {
-      reject(new Error('This device can’t share its location.'))
-      return
-    }
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, heading: p.coords.heading ?? null, speedKmh: null, accuracyM: p.coords.accuracy ?? null, at: p.timestamp }),
-      (e) =>
-        reject(
-          new Error(
-            e.code === e.PERMISSION_DENIED
-              ? isNative()
-                ? 'Location is off for Lifty. Turn it on in Settings → Lifty → Location.'
-                : webLocationHelp()
-              : e.code === e.TIMEOUT
-                ? 'Couldn’t get a GPS fix. Step outside or try again.'
-                : 'We can’t get your location right now.',
-          ),
-        ),
-      { enableHighAccuracy: true, maximumAge: 30000, timeout: timeoutMs },
-    )
-  })
+  return getForegroundPosition(timeoutMs)
 }
 
 /** 'granted' | 'denied' | 'prompt' | 'unknown' — lets us auto-locate without surprising the user. */
 export async function locationPermission(): Promise<'granted' | 'denied' | 'prompt' | 'unknown'> {
-  try {
-    const p = await navigator.permissions?.query({ name: 'geolocation' as PermissionName })
-    return (p?.state as 'granted' | 'denied' | 'prompt') ?? 'unknown'
-  } catch {
-    return 'unknown' // Safari before 16 has no Permissions API for geolocation
-  }
+  return foregroundLocationPermission()
 }
 
 export function openLocationSettings() {
