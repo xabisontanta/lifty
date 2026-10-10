@@ -9,7 +9,9 @@ declare
 begin
  insert into auth.users(id,aud,role,email,raw_app_meta_data,raw_user_meta_data)
  select id,'authenticated','authenticated','pilot-'||id||'@example.invalid','{}','{}' from unnest(array[d,p,p2,outsider,spare_driver])id;
- insert into public.profiles(id,role,first_name,is_demo) values(d,'driver','Pilot driver',true),(p,'passenger','Pilot passenger',true),(p2,'passenger','Second passenger',true),(outsider,'passenger','Outsider',true);
+ -- The pilot passenger is real-shaped on purpose (is_demo false): the push checks below exercise the production delivery path,
+-- and labelled test people (is_demo/is_test) are deliberately in-app only.
+insert into public.profiles(id,role,first_name,is_demo) values(d,'driver','Pilot driver',true),(p,'passenger','Pilot passenger',false),(p2,'passenger','Second passenger',true),(outsider,'passenger','Outsider',true);
  insert into public.profiles(id,role,first_name,is_demo) values(spare_driver,'driver','Vehicle capacity driver',true);
  insert into public.profile_private(id,terms_accepted_at,location_consent_at) select id,now(),now() from unnest(array[d,p,p2,outsider,spare_driver])id;
  insert into public.vehicles(driver_id,make,model,colour,registration_summary,seats_total) values(spare_driver,'Test','Car','White','QA capacity',3);
