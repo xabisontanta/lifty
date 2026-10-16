@@ -24,4 +24,5 @@ playwright-report-local/
 test-results-map/
 test-results-usability/
 test-results-local-usability/
+test-results-manual-accept/
 playwright-report-map/

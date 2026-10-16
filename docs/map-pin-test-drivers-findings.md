@@ -1,5 +1,7 @@
 # Map, searches and test drivers — 10 October 2026
 
+Current checks, commit/push status and remaining limitations: [15 October verification](verification-2026-10-15.md).
+
 ## Step 0: inventory before changes
 
 Starting commit: `330256c`, branch `feature/server-side-matching`; working tree was clean. This request is implemented on `fix/map-pin-test-drivers-demo-toggle`. No AGENTS.md was found. The new request prohibits deployment and production data mutations, superseding the earlier deployment request.
@@ -55,7 +57,7 @@ The road matching handler reads only a server routing token and rejects malforme
 
 ### Step 4 — usability
 
-Fixed request/accepted deep links to restore the exact server arrangement after reload. Removed fabricated schedules/member details, added escape routes to loading/error screens, added driver-profile/rating retries and eligibility guards, and restored chat/club state when Inbox opens directly. Pickup loading/empty/error states are explicit; walk-limit controls respect the configured cap. Finding results no longer impose a multi-second decorative delay. All flows are tested at 390 px; detailed findings and screenshot evidence are linked below when verification completes.
+Fixed request/accepted deep links to restore the exact server arrangement after reload. Removed fabricated schedules/member details, added escape routes to loading/error screens, added driver-profile/rating retries and eligibility guards, and restored chat/club state when Inbox opens directly. Pickup loading/empty/error states are explicit; walk-limit controls respect the configured cap. Finding results no longer impose a multi-second decorative delay. Screenshots cover the main flows at 390 px. The older complete lifecycle run did not finish green; see the dated verification report for the exact scope and remaining device/provider checks.
 
 ## Changed-file groups and operator settings
 

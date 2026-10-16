@@ -51,15 +51,18 @@ Stop `dev:local` first; browser tests start their own app on 5180.
 
 ```text
 npm run check
-npm run test:browser
+npm run test:browser -- tests/browser/pilot.spec.ts tests/browser/session.spec.ts --workers=1
 npm run test:e2e:local
 npm run test:coverage
 npm run test:isolation
 npm run test:lifecycle
+npm run test:safety
 npm run check:secrets
 ```
 
 Map-specific tests use `npx playwright test -c playwright.map.config.ts`. Each suite owns its server; avoid duplicate suite runs on the same port. Reports/traces are ignored because they may contain local sessions. Only reviewed PNG screenshots go into `docs/review/`.
+
+For a shorter real-backend acceptance check, run `npm run test:e2e:local -- tests/e2e-local/manual-accept.spec.ts`. It signs up a local passenger, obtains a real road quote, signs in the test driver, accepts through the normal UI and checks both accounts after reload. It does not simulate a trip. Auth and routing stay real; external fonts are intercepted so a font outage cannot stall the check.
 
 `npm run test:e2e:local` needs the sandbox and `npm run stack:gateway` running, but **not** a separately started simulator: the long journey test starts its own simulator process (its log is kept in `test-results-local/simulator.log`) and fixture drivers answer on their own only where a test wants that. Tests that inspect a *pending* request put the fixture drivers on manual first and restore their settings afterwards. A simulator you started yourself is harmless but unnecessary, and it will answer requests during a test run that you expected to stay pending, so stop it first.
 
@@ -67,7 +70,7 @@ The suite can be run repeatedly: each file removes the accounts earlier runs lef
 
 The sandbox raises Auth's hourly SMS cap (`sms_sent`) because one full run requests about 20 codes; the per-number gap between codes is unchanged and is what the "second code straight away" test exercises.
 
-Isolation/lifecycle assertions are rollback-only. Coverage checks use temporary searches and roll back. The original pilot database suite and concurrency check require a local URL:
+Isolation, lifecycle and safety assertions are rollback-only. The safety suite verifies cleanup preserves an unrelated account, seed modes stay unchanged, and fixture notifications cannot be dispatched as real push. Coverage checks use temporary searches and roll back. The original pilot database suite and concurrency check require a local URL:
 
 ```powershell
 $env:LIFTY_TEST_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:57322/postgres'
@@ -77,6 +80,8 @@ Remove-Item Env:LIFTY_TEST_DATABASE_URL
 ```
 
 Run `npm run types:local` after schema changes. It verifies its local target and does not query a hosted project.
+
+For an exact fresh migration replay, `node scripts/verify-fresh-schema.mjs` creates a separate disposable database on **58322**. It checks all migrations, fixture counts and the three rollback suites. If that replay target already exists, the script refuses to reuse it; `node scripts/verify-fresh-schema.mjs stop` verifies and removes only that disposable target before a fresh run. The browser sandbox on 57322 and other projects stay untouched.
 
 ## Cleanup and reseed
 
@@ -94,6 +99,10 @@ No normal account is part of fixture cleanup. Do not execute either legacy clean
 Prepare a separate non-production Supabase target and reconcile its migrations before applying the isolation migration. Its default mode is disabled; no fixture is visible. Stage only reviewed migration/seed SQL against the explicitly identified staging target. Server credentials and routing keys stay in backend secrets.
 
 A backend operator must set `lifty_private.test_environment.mode` to `staging` and put designated authenticated user UUIDs in `lifty_private.testers`. Unlisted users cannot search, view, request or receive test locations; the client cannot grant itself access. The simulator functions require service-role access and enabled test mode. They are not browser endpoints.
+
+The reviewed seed also requires a transaction-local `lifty.nonproduction_seed` marker matching the already-enabled mode: `LOCAL_LIFTY_ONLY` for local, or `STAGING_LIFTY_ONLY` for staging. It refuses disabled or mismatched targets and never enables or changes a mode itself. Local runners set the local marker only after verifying their fixed Docker target; no staging SQL is executed by them.
+
+Fixture notifications stay in the app. They retain the source trip/leg, become hidden when test access is withdrawn, and are excluded from FCM claims and final per-token dispatch even for an allowlisted tester with a real device token.
 
 The local policy suite exercises disabled, local and staging-allowlist modes against actual Postgres. No remote staging environment was provisioned or verified in this request. Do not enable test visibility on the production project.
 

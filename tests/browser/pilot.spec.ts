@@ -1,5 +1,9 @@
 import {test,expect,type Page} from '@playwright/test'
 test.use({viewport:{width:390,height:844},timezoneId:'Africa/Johannesburg'})
+test.beforeEach(async ({ page }) => {
+ await page.route('https://fonts.googleapis.com/**', route => route.fulfill({status:200,contentType:'text/css',body:''}))
+ await page.route('https://fonts.gstatic.com/**', route => route.abort())
+})
 const project='kdjzevtryezwbjdgyqaf'
 const id='11111111-1111-4111-8111-111111111111'
 const second='22222222-2222-4222-8222-222222222222'
@@ -113,6 +117,7 @@ test('failed low-data save keeps the server preference and reports the error',as
  await page.route('**/rest/v1/profile_private*',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({message:'Preference save failed'})}))
  await page.addInitScript(({s,p})=>{localStorage.setItem('lifty.source',JSON.stringify('live'));localStorage.setItem('sb-'+p+'-auth-token',JSON.stringify(s))},{s:session(id),p:project})
  await page.goto('/p/profile')
+ await expect(page.getByRole('heading',{name:'Browser Fixture',exact:true})).toBeVisible({timeout:15_000})
  const toggle=page.getByRole('switch',{name:'Low-data mode',exact:true})
  await expect(toggle).toBeChecked();await toggle.click()
  await expect(page.getByText('Preference save failed',{exact:true})).toBeVisible()

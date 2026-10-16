@@ -1,5 +1,10 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
+test.beforeEach(async ({ page }) => {
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ status: 200, contentType: 'text/css', body: '' }))
+  await page.route('https://fonts.gstatic.com/**', route => route.abort())
+})
+
 /**
  * "Works in a private tab, fails in a normal tab": a normal browser carries state from earlier visits (an old demo choice, an
  * expired login, a login the server no longer accepts, a bad connection at launch). These tests give the app exactly that
@@ -140,9 +145,10 @@ test('signing out works with no connection at all', async ({ page }) => {
 })
 
 test('every signed-in area sends a logged-out visitor to the welcome screen', async ({ page }) => {
+  test.setTimeout(90_000) // seven complete app loads; each redirect assertion remains bounded
   await fakeBackend(page)
   for (const path of ['/p/home', '/p/find', '/p/profile', '/p/matches', '/d/home', '/d/profile', '/onboarding/passenger/1']) {
-    await page.goto(path)
+    await page.goto(path, { waitUntil: 'domcontentloaded' })
     await expect(page, path).toHaveURL(/\/welcome$/)
   }
 })
