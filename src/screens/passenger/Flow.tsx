@@ -19,6 +19,7 @@ import { instanceToMatch } from '@/services/liveApi'
 import { resetTrackingFeed } from '@/services/tracking'
 import { currentUserId } from '@/services/supabase'
 import { useApp } from '@/store/app'
+import { driverIsVerified } from '@/domain/verification'
 import { shareInvite } from './Tabs'
 import {shareCommute} from '@/services/share'
 
@@ -471,6 +472,7 @@ function TrackingBody({ match }: { match: Match }) {
   const [privacy, setPrivacy] = useState(false)
   const [safety, setSafety] = useState(false)
   const d = match.driver
+  const verificationHold = s.verificationHold ?? (match as Match & {liveInstance?: {verificationHold?:boolean}}).liveInstance?.verificationHold
   const pre = s.status === 'sharing-soon' || s.status === 'driver-approaching' || s.status === 'passenger-approaching' || s.status === 'both-at-pickup'
   const title = s.status === 'underway' ? 'On Your Way' : s.status === 'destination-reached' || s.status === 'ended' ? (s.noShow ? 'Commute missed' : 'You’ve arrived') : s.status === 'sharing-soon' ? 'Starting soon' : s.status === 'both-at-pickup' ? 'At Pickup' : 'Driver Approaching'
   const feedError = (feed as { getError?: () => string | null }).getError?.()
@@ -490,6 +492,7 @@ function TrackingBody({ match }: { match: Match }) {
   return (
     <Screen>
       <ScreenHeader title={title} subtitle={pre ? `Pickup · ${match.pickup.label}` : `To ${match.destination.label}`} onBack={() => nav(-1)} right={<button className="icon-btn" aria-label="Location privacy" onClick={() => setPrivacy(true)}><Icon name="lock" size={20} /></button>} />
+      {verificationHold&&<Banner tone="warning">Your driver's approval requires review. New pickups are on hold. Contact your lift club before travelling; passengers already collected can finish their journey.</Banner>}
       {(stale || !online || feedError) && (
         <div style={{ padding: '0 16px 8px' }}>
           <Banner tone="warning" icon={online ? 'alert' : 'wifiOff'} action={<TextButton onClick={() => { feed.setLinkDown(false); feed.restart(); toast('Reconnecting…') }}>Retry</TextButton>}>
@@ -533,7 +536,7 @@ function TrackingBody({ match }: { match: Match }) {
         {s.status==='both-at-pickup'&&<Banner tone="info">Your driver confirms collection for your pickup.</Banner>}
         {(s.status === 'driver-approaching' || s.status === 'passenger-approaching') && !s.passengerAtPickup && (
           <div className="row-flex">
-            <div className="grow"><SecondaryButton size="sm" icon="pin" onClick={() => feed.markPassengerAtPickup()}>I’m at the pickup</SecondaryButton></div>
+            <div className="grow"><SecondaryButton size="sm" icon="pin" onClick={() => {void feed.markPassengerAtPickup().catch(e=>toast(e instanceof Error?e.message:'Could not update your pickup status','error'))}}>I’m at the pickup</SecondaryButton></div>
             <NavigateButton destination={match.pickup.location} mode="walking" label="Walk there" />
           </div>
         )}
@@ -673,7 +676,7 @@ export function DriverPublicProfile() {
               </div>
               <div className="row-flex wrap" style={{ marginTop: 12 }}>
                 {d.isTest && <StatusBadge tone="warning">Test driver</StatusBadge>}
-                <VerificationBadge status={d.verification.identity} />
+                <VerificationBadge status={driverIsVerified(d.verification)?'verified':Object.values(d.verification).includes('expired')?'expired':'pending'} label="Documents reviewed" />
                 <VerificationBadge label="Verified Vehicle" status={d.verification.vehicle} />
                 <StatusBadge tone="info" icon="clock">{d.reliability == null ? 'No trip history yet' : `${d.reliability}% reliable`}</StatusBadge>
               </div>

@@ -34,12 +34,32 @@ describe('live tracking lifecycle',()=>{
  it('stops on server completion',async()=>{const f=feed();await settle();row('commute_instances',{status:'completed'});expect(harness.stop).toHaveBeenCalledOnce();expect(f.getSnapshot().status).toBe('ended')})
  it('stops passenger GPS after collection while receiving the driver',async()=>{const f=feed(instance(false));await settle();row('instance_riders',{passenger_id:'p1',status:'collected',driver_arrived_at:null});expect(harness.stop).toHaveBeenCalledOnce();broadcast('p1',{from:'driver',lat:-29.7,lng:31.1,at:Date.now()});expect(f.getSnapshot().driverLocation?.lat).toBe(-29.7)})
  it('keeps riders separate and rejects a mismatched sender',async()=>{const f=feed();await settle();broadcast('p1',{from:'p1',lat:-29.51,lng:31.1,at:Date.now()});broadcast('p2',{from:'p2',lat:-29.52,lng:31.2,at:Date.now()});broadcast('p1',{from:'p2',lat:99,lng:99,at:Date.now()});expect(f.getSnapshot().passengerLocation?.lat).toBe(-29.51);f.selectRider('p2');expect(f.getSnapshot().passengerLocation?.lat).toBe(-29.52);expect(f.getSnapshot().riders?.map(r=>r.location?.lat)).toEqual([-29.51,-29.52])})
- it('a failed status transition does not change the rider',async()=>{const f=feed();await settle();harness.rpc.mockResolvedValue({data:null,error:{message:'Only the driver'}});f.markCollected();await settle();expect(f.getSnapshot().collected).toBe(false);expect(f.getError()).toBe('Only the driver')})
+ it('a failed status transition rejects and does not change the rider',async()=>{const f=feed();await settle();harness.rpc.mockResolvedValue({data:null,error:{message:'Only the driver'}});await expect(f.markCollected('p1')).rejects.toThrow('Only the driver');expect(f.getSnapshot().collected).toBe(false);expect(f.getError()).toBe('Only the driver')})
+ it('an in-flight pickup action stays with its explicit rider when selection changes',async()=>{
+  const f=feed();await settle();let resolve!:(value:any)=>void
+  harness.rpc.mockImplementation((name:string)=>name==='mark_rider_status'?new Promise(r=>{resolve=r}):Promise.resolve({data:true,error:null}))
+  const action=f.markCollected('p1');f.selectRider('p2');resolve({data:null,error:null});await action
+  expect(harness.rpc).toHaveBeenCalledWith('mark_rider_status',{p_instance:'trip',p_passenger:'p1',p_status:'collected'})
+  expect(f.getSnapshot().riders?.map(r=>r.status)).toEqual(['collected','expected']);expect(f.getSnapshot().collected).toBe(false)
+ })
+ it('rejects a pickup action for an unrelated passenger without making a request',async()=>{
+  const f=feed();await settle();harness.rpc.mockClear()
+  await expect(f.markCollected('outsider')).rejects.toThrow('not part of the commute');expect(harness.rpc).not.toHaveBeenCalled()
+ })
  it('failed sharing withdrawal remains reviewable and returns false',async()=>{const f=feed(instance(false));await settle();harness.rpc.mockResolvedValue({data:null,error:{message:'Connection lost'}});expect(await f.endSharing()).toBe(false);expect(harness.stop).not.toHaveBeenCalled()})
  it('only sends fixes through the server RPC',async()=>{feed();await settle();harness.fix({lat:-29.51,lng:31.1,heading:0,speedKmh:5,accuracyM:3,at:Date.now()});await settle();expect(harness.rpc).toHaveBeenCalledWith('publish_location',expect.objectContaining({p_instance:'trip',p_lat:-29.51}));expect(harness.channels.every(c=>!('send' in c))).toBe(true)})
 })
 
 describe('catching up on live updates that were missed',()=>{
+ it('learns about an approval hold and recovery while the trip remains open',async()=>{
+  const f=feed();await settle()
+  harness.rpc.mockImplementation((name:string)=>Promise.resolve({data:name==='get_current_instance'?{id:'trip',verificationHold:true,verificationHoldReason:'expired'}:true,error:null}))
+  await vi.advanceTimersByTimeAsync(10_000)
+  expect(f.getSnapshot().verificationHold).toBe(true)
+  harness.rpc.mockImplementation((name:string)=>Promise.resolve({data:name==='get_current_instance'?{id:'trip',verificationHold:false}:true,error:null}))
+  await vi.advanceTimersByTimeAsync(10_000)
+  expect(f.getSnapshot().verificationHold).toBe(false)
+ })
  it('picks up a change that landed before the live channel was ready',async()=>{
   harness.riderRows=[{passenger_id:'p1',status:'collected',driver_arrived_at:new Date().toISOString()}]
   const f=feed(instance(false));await settle()

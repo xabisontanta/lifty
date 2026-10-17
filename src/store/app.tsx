@@ -10,7 +10,7 @@ import type {
   UserProfile,
   Weekday,
 } from '@/domain/types'
-import { api, isLive, type AccountSnapshot } from '@/services/api'
+import { api, isLive, type AccountSnapshot, type DriverDocument } from '@/services/api'
 import { supabase } from '@/services/supabase'
 import { clearLiveCaches } from '@/services/liveApi'
 import { setNotice, wasDeliberateSignOut } from '@/lib/notice'
@@ -66,6 +66,8 @@ export interface AppState {
   paymentMethodId: string
   savedAlert: boolean
   driver: DriverSetup
+  driverDocuments: DriverDocument[]
+  driverOnboardingStep: 1 | 2 | 3 | 4
   sharingConsent: boolean
   emergencyContact: string
   ratedMatchIds: string[]
@@ -90,6 +92,8 @@ export const initialState: AppState = {
   sharingConsent: false,
   emergencyContact: '',
   ratedMatchIds: [],
+  driverDocuments: [],
+  driverOnboardingStep: 1,
   driver: {
     vehicle: { registration: '', make: '', model: '', year: '', colour: '', seats: 3, bodyType: 'sedan' },
     docs: { id: false, licence: false, registration: false, insurance: false },
@@ -139,18 +143,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const applySnapshot = useCallback((snapshot: AccountSnapshot | null) => {
     if (!snapshot) { setState({...freshLiveState(),authReady:true}); return }
     const input=snapshot.driverSetup
+    const draft=snapshot.driverDraft
     const first=input?.legs.find(l=>l.direction==='to_work') ?? input?.legs[0]
     const evening=input?.legs.find(l=>l.direction==='to_home')
     const base=freshLiveState()
+    const driver: DriverSetup = input ? {...base.driver,vehicle:input.vehicle,seatsOpen:input.seats,monthlyContribution:input.monthlyContribution,
+      commute:{...base.driver.commute,origin:first?.origin.label ?? '',destination:first?.destination.label ?? '',originPlace:first?.origin,destinationPlace:first?.destination,
+        departure:first?.departure ?? '06:30',returnTime:evening?.departure ?? '17:00',offerReturn:!!evening,days:first?.days ?? [],maxDeviationMin:input.maxDeviationMin}} : base.driver
+    if (draft && !snapshot.onboarded) {
+      driver.vehicle = {...driver.vehicle,...draft.vehicle}
+      driver.commute = {...driver.commute,...draft.commute}
+      if(typeof draft.seatsOpen==='number')driver.seatsOpen = draft.seatsOpen
+      if(typeof draft.monthlyContribution==='number')driver.monthlyContribution = draft.monthlyContribution
+    }
+    driver.docs = {id:snapshot.documents.some(d=>d.kind==='id'),licence:snapshot.documents.some(d=>d.kind==='licence'),registration:snapshot.documents.some(d=>d.kind==='vehicle_registration'),insurance:snapshot.documents.some(d=>d.kind==='insurance')}
     setState(previous=>({ ...base,club:previous.user?.id===snapshot.user.id?previous.club:null,returnClub:previous.user?.id===snapshot.user.id?previous.returnClub:null,authReady:true,user:snapshot.user,phone:snapshot.user.phone,role:snapshot.user.role,verified:true,onboarded:snapshot.onboarded,
       plan:snapshot.commutes.find(c=>c.direction==='to_work') ?? snapshot.commutes[0] ?? base.plan,
       sharingConsent:snapshot.preferences.locationConsent,lowData:snapshot.preferences.lowData,emergencyContact:snapshot.preferences.emergencyContact,
       avatarUrl:snapshot.avatarUrl,exceptions:snapshot.exceptions,request:snapshot.pendingRequests.find(r=>r.status==='pending'||r.status==='reviewing') ?? snapshot.pendingRequests[0] ?? null,
-      savedAlert:snapshot.savedAlert,verification:snapshot.verification,
-      driver:input ? {...base.driver,vehicle:input.vehicle,seatsOpen:input.seats,monthlyContribution:input.monthlyContribution,
-      docs:{id:snapshot.documents.some(d=>d.kind==='id'),licence:snapshot.documents.some(d=>d.kind==='licence'),registration:snapshot.documents.some(d=>d.kind==='vehicle_registration'),insurance:snapshot.documents.some(d=>d.kind==='insurance')},
-      commute:{...base.driver.commute,origin:first?.origin.label ?? '',destination:first?.destination.label ?? '',originPlace:first?.origin,destinationPlace:first?.destination,
-       departure:first?.departure ?? '06:30',returnTime:evening?.departure ?? '17:00',offerReturn:!!evening,days:first?.days ?? [],maxDeviationMin:input.maxDeviationMin}} : base.driver }))
+      savedAlert:snapshot.savedAlert,verification:snapshot.verification,driverDocuments:snapshot.documents,
+      driverOnboardingStep:draft?.step??1,
+      driver }))
   },[])
   const refreshAccount=useCallback(async()=>{
     if (!isLive()) return null

@@ -173,31 +173,32 @@ export function AddressField({ label, value, onSelect, onText, icon = 'pin', hin
   )
 }
 
-/* ---------- Private calling: numbers are never shown ---------- */
+/* ---------- Contact: group chat is the default when calling is not configured ---------- */
 
 export function CallButton({ name, chatId, className = 'action' }: { name: string; chatId: string; className?: string }) {
   const nav = useNavigate()
   const [open, setOpen] = useState(false)
+  const calling=!!env.proxyCallNumber
   return (
     <>
-      <button type="button" className={className} onClick={() => setOpen(true)} aria-label={`Call ${name}`}>
+      <button type="button" className={className} onClick={() => setOpen(true)} aria-label={`${calling?'Call':'Message'} ${name}`}>
         {className.includes('icon-btn') ? (
-          <Icon name="phone" size={20} />
+          <Icon name={calling?'phone':'message'} size={20} />
         ) : (
           <>
             <span className="a-ic">
-              <Icon name="phone" />
+              <Icon name={calling?'phone':'message'} />
             </span>
-            Call
+            {calling?'Call':'Message'}
           </>
         )}
       </button>
-      <BottomSheet open={open} onClose={() => setOpen(false)} title={`Call ${name}`}>
+      <BottomSheet open={open} onClose={() => setOpen(false)} title={`${calling?'Call':'Message'} ${name}`}>
         <div className="stack-3">
-          <p className="muted">Lifty keeps both phone numbers private. {env.proxyCallNumber ? 'Your call is connected through a Lifty number.' : 'Use chat to reach them — they get a notification right away.'}</p>
+          <p className="muted">{calling?'Open your phone app with the configured Lifty contact number.':'Send a message in your lift club group. The driver and accepted passengers can see it; personal phone numbers stay private.'}</p>
           {env.proxyCallNumber ? (
             <a className="btn btn-primary btn-block" href={`tel:${env.proxyCallNumber}`}>
-              <Icon name="phone" size={20} /> Call privately
+              <Icon name="phone" size={20} /> Open phone app
             </a>
           ) : (
             <button className="btn btn-primary btn-block" onClick={() => nav(`/chat/${chatId}`, { state: { name } })}>
@@ -222,7 +223,7 @@ export function NavigateButton({ destination, waypoint, mode = 'driving', label 
       </button>
       <BottomSheet open={open} onClose={() => setOpen(false)} title={mode === 'walking' ? 'Walking directions' : 'Open navigation'}>
         <div className="stack-3">
-          <p className="muted small">{mode === 'walking' ? 'Get step-by-step walking directions to your pickup point.' : 'Turn-by-turn directions open in your navigation app. Lifty keeps sharing your live position with your lift club.'}</p>
+          <p className="muted small">{mode === 'walking' ? 'Get step-by-step walking directions to your pickup point.' : 'Turn-by-turn directions open in your navigation app. Return to Lifty for pickup actions.'}</p>
           <SecondaryButton onClick={() => { openNavigation('google', { destination, waypoint, mode }); setOpen(false) }}>Google Maps</SecondaryButton>
           {mode === 'driving' && <SecondaryButton onClick={() => { openNavigation('waze', { destination, waypoint }); setOpen(false) }}>Waze{waypoint ? ' (to pickup first)' : ''}</SecondaryButton>}
         </div>

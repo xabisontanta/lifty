@@ -5,6 +5,7 @@ import { formatDays, formatDistance, rand, walkLabel } from '@/lib/format'
 import { Icon, type IconName } from '@/components/ui/Icon'
 import { Avatar, Card, Rating, StatusBadge, VerificationBadge } from '@/components/ui/kit'
 import { AvatarStack } from '@/components/ui/extras'
+import { driverIsVerified } from '@/domain/verification'
 
 /* ---------- Metric tile — the four numbers that explain a match ---------- */
 
@@ -66,7 +67,7 @@ export function MatchCard({ match, rank, onView }: { match: Match; rank?: number
           <span className="match-chips">
             {d.isTest && <StatusBadge tone="warning">Test driver</StatusBadge>}
             <StatusBadge tone="teal" icon="route">{match.routeOverlap}% route overlap</StatusBadge>
-            {d.verification.identity === 'verified' && <StatusBadge tone="success" icon="shieldCheck">Verified</StatusBadge>}
+            {driverIsVerified(d.verification) && <StatusBadge tone="success" icon="shieldCheck">Verified</StatusBadge>}
             {match.partial && <StatusBadge tone="warning" icon="calendar">Partial schedule</StatusBadge>}
           </span>
         </span>
@@ -123,7 +124,7 @@ export function DriverCard({ driver, onClick, trailing }: { driver: DriverProfil
         <div className="row-flex wrap" style={{ marginTop: 4 }}>
           {driver.isTest && <StatusBadge tone="warning">Test driver</StatusBadge>}
           <Rating value={driver.rating} count={driver.ratingCount} size="sm" />
-          {driver.verification.identity === 'verified' && <VerificationBadge label="Verified" />}
+          {driverIsVerified(driver.verification) && <VerificationBadge label="Documents reviewed" />}
         </div>
       </div>
       {trailing ?? (onClick ? <Icon name="chevron" size={18} className="row-chev" /> : null)}

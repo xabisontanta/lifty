@@ -13,6 +13,8 @@ import { useApp } from '@/store/app'
 import { useAsync } from '@/hooks/useAsync'
 import { usePassengerClubs } from '@/hooks/useClubs'
 import { api, type AppNotification } from '@/services/api'
+import { ClubChats } from '@/components/chat/ClubChats'
+import { useClubChats } from '@/hooks/useClubChats'
 
 export const WALK_M_PER_MIN = 70
 
@@ -33,8 +35,9 @@ export async function shareInvite(toast: (m: string, t?: 'success' | 'error' | '
 /* ---------- Layout with bottom navigation ---------- */
 export function PassengerTabs() {
   const { state } = useApp()
+  const chats = useClubChats()
   const { data: notes } = useAsync(() => api.listNotifications(), [state.user?.id])
-  const unread = (notes?.filter((n) => !n.read).length ?? 0) + (state.request && state.request.status !== 'accepted' ? 1 : 0)
+  const unread = (notes?.filter((n) => !n.read && n.kind !== 'message').length ?? 0) + chats.totalUnread
   return (
     <Screen>
       <Outlet />
@@ -264,7 +267,6 @@ function ClubLeg({ club }: { club: LiftClub }) {
 export function Inbox() {
   const nav = useNavigate()
   const { state } = useApp()
-  const clubQuery = usePassengerClubs()
   const { data, loading, error, retry } = useAsync(() => api.listNotifications(), [state.user?.id])
   const [items, setItems] = useState<AppNotification[]>([])
   useEffect(() => {
@@ -272,22 +274,10 @@ export function Inbox() {
     if (data?.some((n) => !n.read)) void api.markNotificationsRead()
   }, [data])
   useEffect(() => { setItems([]); return api.subscribeNotifications((n) => setItems((x) => [n, ...x])) }, [state.user?.id])
-  const chats = [clubQuery.club, clubQuery.returnClub].filter(Boolean) as LiftClub[]
   return (
     <ScreenBody>
       <div className="title-block"><h1>Messages</h1><p>Your lift club chat and commute updates.</p></div>
-      {clubQuery.loading&&<CardSkeleton/>}
-      {clubQuery.error&&<ErrorState message={clubQuery.error.message} onRetry={clubQuery.retry}/>}
-      {chats.length > 0 && (
-        <>
-          <SectionTitle>Lift club chat</SectionTitle>
-          <div className="list">
-            {chats.map((c) => (
-              <ProfileRow key={c.id} icon="message" title={`${c.driver.firstName} ${c.driver.lastInitial}. · ${c.direction === 'to_home' ? 'Evening' : 'Morning'} lift club`} subtitle="Numbers stay private — chat here" onClick={() => nav(`/chat/${c.matchId}`, { state: { name: `${c.driver.firstName} ${c.driver.lastInitial}.` } })} />
-            ))}
-          </div>
-        </>
-      )}
+      <ClubChats />
       <SectionTitle>Updates</SectionTitle>
       {loading ? <CardSkeleton /> : error ? <ErrorState message={error.message} onRetry={retry} /> : (
         <div className="list">

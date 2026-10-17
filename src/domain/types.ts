@@ -8,7 +8,7 @@ export interface LatLng {
   lng: number
 }
 
-export type VerificationStatus = 'verified' | 'pending' | 'unverified'
+export type VerificationStatus = 'verified' | 'pending' | 'unverified' | 'expired'
 
 export interface PublicVerification {
   identity: VerificationStatus
@@ -171,7 +171,7 @@ export interface ContributionBreakdown {
   total: number
 }
 
-export type RequestStatus = 'pending' | 'reviewing' | 'accepted' | 'declined' | 'cancelled'
+export type RequestStatus = 'pending' | 'reviewing' | 'accepted' | 'declined' | 'cancelled' | 'expired'
 
 export interface JoinRequest {
   id: string
@@ -195,6 +195,8 @@ export interface PassengerSummary {
 
 export interface IncomingRequest {
   id: string
+  legId?: string
+  direction?: LegDirection
   passenger: PassengerSummary
   pickup: Place
   destination: Place
@@ -209,7 +211,7 @@ export interface IncomingRequest {
   /** set when the passenger booked specific dates instead of every week */
   specificDates?: string[]
   startDate?: string
-  status: 'pending' | 'accepted' | 'declined'
+  status: RequestStatus
   monthlyContribution: number
 }
 
@@ -305,6 +307,7 @@ export interface PassengerLocation extends LatLng {
 }
 
 export interface TrackingSnapshot {
+  verificationHold?: boolean
   riders?: { passengerId: string; firstName: string; status: string; pickupLabel: string; driverArrivedAt: number | null; location: PassengerLocation | null }[]
   status: TrackingStatus
   driverLocation: DriverLocation | null

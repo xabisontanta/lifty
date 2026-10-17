@@ -20,10 +20,11 @@ import { DriverInbox } from '@/screens/driver/Inbox'
 import {DriverControls,DriverLiveTrip} from '@/screens/driver/PilotDriver'
 import {currentUserId,sb} from '@/services/supabase'
 import {hasSupabase} from '@/lib/env'
+import { DriverDraftSaver } from '@/screens/auth/DriverDraftSaver'
 
-function homeFor(role: string | null, onboarded: boolean): string {
+function homeFor(role: string | null, onboarded: boolean, driverStep=1): string {
   if (!role) return '/welcome'
-  if (!onboarded) return role === 'driver' ? '/onboarding/driver/1' : '/onboarding/passenger/1'
+  if (!onboarded) return role === 'driver' ? `/onboarding/driver/${driverStep}` : '/onboarding/passenger/1'
   return role === 'driver' ? '/d/home' : '/p/home'
 }
 
@@ -31,13 +32,13 @@ function homeFor(role: string | null, onboarded: boolean): string {
 function Guard({ role, children }: { role: 'passenger' | 'driver'; children: ReactElement }) {
   const { state } = useApp()
   const loc = useLocation()
-  if (state.role !== role || !state.onboarded) return <Navigate to={homeFor(state.role, state.onboarded)} replace state={{ from: loc.pathname }} />
+  if (state.role !== role || !state.onboarded) return <Navigate to={homeFor(state.role, state.onboarded, state.driverOnboardingStep)} replace state={{ from: loc.pathname }} />
   return children
 }
 
 function Landing() {
   const { state } = useApp()
-  return <Navigate to={homeFor(state.role, state.onboarded)} replace />
+  return <Navigate to={homeFor(state.role, state.onboarded, state.driverOnboardingStep)} replace />
 }
 
 function SetupGuard({role,children}:{role:'passenger'|'driver';children:ReactElement}) {
@@ -55,13 +56,20 @@ function LiveAlerts() {
     const accountId=state.user?.id
     let active=true
     let removePush:(()=>void)|undefined
-    void registerPush(async(token,platform)=>{if(active&&currentUserId===accountId)await api.savePushToken(token,platform)}).then(remove=>{if(active)removePush=remove;else remove()})
+    let pushGeneration=0
+    const enablePush=()=>{
+      const n=++pushGeneration
+      removePush?.();removePush=undefined
+      void registerPush(async(token,platform)=>{if(active&&n===pushGeneration&&currentUserId===accountId)await api.savePushToken(token,platform)}).then(remove=>{if(active&&n===pushGeneration)removePush=remove;else remove()})
+    }
+    enablePush()
+    window.addEventListener('lifty:enable-push',enablePush)
     const unsubscribe=api.subscribeNotifications((n) => {
-      if(n.kind==='verification'&&accountId)void sb().rpc('driver_verification',{p_user:accountId}).then(({data,error})=>{if(active&&!error&&data)update({verification:data})})
+      if((n.kind==='verification'||n.kind.startsWith('verification_')||n.kind.startsWith('document_')||n.kind.startsWith('driver_verification_'))&&accountId)void sb().rpc('driver_verification',{p_user:accountId}).then(({data,error})=>{if(active&&!error&&data)update({verification:data})})
       toast(n.title, n.kind === 'declined' || n.kind === 'no_show' ? 'error' : 'success')
       void notifyLocal(n.title, n.body)
     })
-    return()=>{active=false;removePush?.();unsubscribe()}
+    return()=>{active=false;++pushGeneration;removePush?.();window.removeEventListener('lifty:enable-push',enablePush);unsubscribe()}
   }, [state.onboarded,state.user?.id, toast])
   useEffect(() => {
     if (state.onboarded) void ensureNotificationPermission()
@@ -80,6 +88,7 @@ export default function App() {
     <ErrorBoundary>
     <div className="app-frame">
       <LiveAlerts />
+      <DriverDraftSaver />
       {!online && (
         <div role="status" style={{ background: 'var(--navy)', color: '#fff', fontSize: 13, padding: 'calc(var(--safe-top) + 6px) 12px 6px', display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
           <Icon name="wifiOff" size={16} /> You’re offline — showing saved information
@@ -138,12 +147,15 @@ export default function App() {
         <Route path="/d/contributions" element={<Guard role="driver"><ContributionLedger /></Guard>} />
         <Route path="/d/ratings" element={<Guard role="driver"><Ratings /></Guard>} />
         <Route path="/d/settings" element={<Guard role="driver"><DriverControls /></Guard>} />
+        <Route path="/d/verification" element={<Guard role="driver"><DriverVerification manage /></Guard>} />
         <Route path="/d/exceptions" element={<Guard role="driver"><ScheduleExceptions /></Guard>} />
 
         {/* Shared */}
         <Route path="/history" element={state.user?<CommuteHistory/>:<Navigate to="/signin" replace/>} />
         <Route path="/safety" element={<Safety />} />
         <Route path="/chat/:id" element={<Chat />} />
+        <Route path="/d/chat/:id" element={<Guard role="driver"><Chat /></Guard>} />
+        <Route path="/p/chat/:id" element={<Guard role="passenger"><Chat /></Guard>} />
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/admin" element={<Admin />} />

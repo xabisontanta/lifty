@@ -98,12 +98,21 @@ export class SupabaseTrackingFeed implements TrackingFeed {
   }
   private syncRider(){ const r=this.rider();this.riderStatus=r?.status??'absent';this.driverArrivedAt=r?.driverArrivedAt??null;this.peer=this.isDriver?(this.peers.get(r?.passengerId??'')??null):(this.peers.get(this.inst.driver.id)??null) }
   setConsent(consent:boolean){if(consent===this.opts.sharingConsent)return;this.opts.sharingConsent=consent;if(!consent)this.stopOnlyGps();else if(this.channels.length)void this.startGps()}
-  markDriverArrived(){const r=this.rider();if(r)void this.action('mark_driver_arrived',{p_instance:this.inst.id,p_passenger:r.passengerId},()=>{r.driverArrivedAt=Date.now();this.syncRider()})}
-  markPassengerAtPickup(){this.changeRider('at_pickup')}
-  markCollected(){this.changeRider('collected')}
-  markNoShow(){this.changeRider('no_show')}
-  private changeRider(status:string){const r=this.rider();if(!r)return;void this.action('mark_rider_status',{p_instance:this.inst.id,p_passenger:r.passengerId,p_status:status},()=>{r.status=status;this.syncRider();if(!this.isDriver&&status==='collected')this.stopOnlyGps()})}
-  private async action(name:string,args:Record<string,unknown>,done:()=>void){if(await this.rpc(name,args)){done();this.emit()}}
+  private actionRider(passengerId?:string) {
+    const r=passengerId&&this.isDriver?this.inst.riders.find(r=>r.passengerId===passengerId):this.rider()
+    if(!r)throw new Error('This passenger is not part of the commute.')
+    return r
+  }
+  async markDriverArrived(passengerId?:string){const r=this.actionRider(passengerId);await this.action('mark_driver_arrived',{p_instance:this.inst.id,p_passenger:r.passengerId},()=>{r.driverArrivedAt=Date.now();this.syncRider()})}
+  async markPassengerAtPickup(){await this.changeRider('at_pickup')}
+  async markCollected(passengerId?:string){await this.changeRider('collected',passengerId)}
+  async markNoShow(passengerId?:string){await this.changeRider('no_show',passengerId)}
+  private async changeRider(status:string,passengerId?:string){const r=this.actionRider(passengerId);await this.action('mark_rider_status',{p_instance:this.inst.id,p_passenger:r.passengerId,p_status:status},()=>{r.status=status;this.syncRider();if(!this.isDriver&&status==='collected')this.stopOnlyGps()})}
+  private async action(name:string,args:Record<string,unknown>,done:()=>void){
+    if(!await this.rpc(name,args))throw new Error(this.error??'Could not update this pickup. Please retry.')
+    if(this.disposed)return
+    this.error=null;done();this.emit()
+  }
   async endSharing(){
     const ok=await this.rpc(this.isDriver?'complete_instance':'stop_my_sharing',{p_instance:this.inst.id})
     if(ok){this.stopped=true;if(this.isDriver)this.instanceStatus='completed';this.stopSharing();this.emit()}
@@ -186,12 +195,16 @@ export class SupabaseTrackingFeed implements TrackingFeed {
   private async resync() {
     if (this.disposed || this.stopped) return
     try {
-      const [trip, riders] = await Promise.all([
+      const [trip, riders, computed] = await Promise.all([
         sb().from('commute_instances').select('status').eq('id', this.inst.id).maybeSingle(),
         sb().from('instance_riders').select('passenger_id, status, driver_arrived_at').eq('instance_id', this.inst.id),
+        sb().rpc('get_current_instance'),
       ])
       if (this.disposed || this.stopped) return
       let changed = false
+      if(computed.data?.id===this.inst.id&&typeof computed.data.verificationHold==='boolean'&&computed.data.verificationHold!==!!this.inst.verificationHold){
+        this.inst.verificationHold=computed.data.verificationHold;this.inst.verificationHoldReason=computed.data.verificationHoldReason;changed=true
+      }
       const status = trip.data?.status as CommuteInstance['status'] | undefined
       if (status && status !== this.instanceStatus) {
         this.instanceStatus = status
@@ -300,7 +313,7 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     }
     if (!this.isDriver && s.status === 'driver-approaching' && s.pickupEta > 0 && s.pickupEta <= 5) once('5min', 'Your driver is 5 minutes away', `Head to ${this.rider()?.pickup.label ?? 'the pickup point'}.`)
     if (!this.isDriver && s.driverArrived) once('arrived', 'Your driver has arrived', 'They’ll wait 3 minutes at the pickup point.')
-    if (this.isDriver && s.passengerAtPickup) once('pax-here', 'Your passenger is at the pickup point', '')
+    if (this.isDriver && s.passengerAtPickup) once('pax-here:'+this.rider()?.passengerId, `${this.rider()?.firstName??'Your passenger'} is at the pickup point`, '')
   }
 
   private compute(): TrackingSnapshot {
@@ -325,6 +338,7 @@ export class SupabaseTrackingFeed implements TrackingFeed {
     const driverLocation: DriverLocation | null = d ? { lat: d.lat, lng: d.lng, heading: d.heading ?? 0, speed: d.speed ?? 0, updatedAt: d.at } : null
     const passengerLocation: PassengerLocation | null = p ? { lat: p.lat, lng: p.lng, updatedAt: p.at } : null
     return {
+      verificationHold:!!this.inst.verificationHold,
       riders:this.isDriver?this.inst.riders.map(r=>({passengerId:r.passengerId,firstName:r.firstName,status:r.status,pickupLabel:r.pickup.label,driverArrivedAt:r.driverArrivedAt??null,location:this.peers.has(r.passengerId)?{...this.peers.get(r.passengerId)!,updatedAt:this.peers.get(r.passengerId)!.at}:null})):undefined,
       status,
       driverLocation,

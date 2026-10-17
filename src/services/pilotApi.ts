@@ -1,10 +1,12 @@
-import type { AccountSnapshot, LiftyApi } from './api'
+import type { AccountSnapshot, DriverOnboardingDraft, LiftyApi } from './api'
 import { ApiError } from './api'
-import { sb, publicFileUrl } from './supabase'
+import { sb, publicFileUrl, currentUserId } from './supabase'
 import { hueFor } from './liveApi'
 import { isSessionProblem } from './sessionErrors'
 import type { CommutePlan, Place, ScheduleException } from '@/domain/types'
 import { validCoordinate } from '@/lib/mapLocation'
+import { ownedFilePath } from '@/lib/storagePaths'
+import { env } from '@/lib/env'
 
 type J = any
 export async function pilotRpc(name: string, args?: Record<string, unknown>): Promise<J> {
@@ -35,22 +37,50 @@ export function mapAccount(j:J):AccountSnapshot {
   driverSetup:v?{vehicle:{registration:v.registration_summary,make:v.make,model:v.model,colour:v.colour,year:String(v.year??''),seats:v.seats_total,bodyType:v.body_type,photoUrl:publicFileUrl('vehicle-photos',v.photo_path)},
    legs:legs.map((l:J)=>({direction:l.direction,origin:place(l.origin_label,l.originPoint),destination:place(l.destination_label,l.destinationPoint),departure:l.departure_time.slice(0,5),days:l.days,route:{coordinates:l.routeGeometry.coordinates,distanceM:l.route_distance_m,durationS:l.route_duration_s}})),
    seats:legs[0]?legs[0].seats_open+(j.memberCount??0):v.seats_total,maxDeviationMin:legs[0]?.max_deviation_min??8,monthlyContribution:legs[0]?.monthly_contribution??0}:undefined,
-  documents:j.documents??[],exceptions:(j.exceptions??[]).map(exception),savedAlert:commutes.some(c=>c.notify_on_match),
+  documents:(j.documents??[]).map((d:J)=>({id:d.id,kind:d.kind,status:d.status,expiresOn:d.expires_on??d.expiresOn??undefined,reviewNote:d.review_note??d.reviewNote??undefined})),exceptions:(j.exceptions??[]).map(exception),savedAlert:commutes.some(c=>c.notify_on_match),
   pendingRequests:(j.requests??[]).map((r:J)=>({id:r.id,matchId:r.leg_id,status:r.status,createdAt:r.created_at,startDate:r.start_date})),
  }
 }
 
+/** Drafts deliberately use a small flat Place contract and never carry approval state. */
+function draftToWire(d: DriverOnboardingDraft) {
+ const point=(p?:Place)=>p?{label:p.label,lng:p.location.lng,lat:p.location.lat}:undefined
+ const vehicle={registration:d.vehicle.registration,make:d.vehicle.make,model:d.vehicle.model,year:d.vehicle.year,colour:d.vehicle.colour,seats:d.vehicle.seats,bodyType:d.vehicle.bodyType}
+ const vehiclePhotoPath=ownedFilePath(d.vehicle.photoUrl,'vehicle-photos',currentUserId,env.supabaseUrl)
+ return {...d,vehicle,...(vehiclePhotoPath?{vehiclePhotoPath}:{}),commute:{...d.commute,originPlace:point(d.commute.originPlace),destinationPlace:point(d.commute.destinationPlace)}}
+}
+function draftFromWire(d:J):DriverOnboardingDraft|null {
+ if(!d||typeof d!=='object'||!d.commute||!d.vehicle)return null
+ const point=(p:J):Place|undefined=>p&&validCoordinate({lng:p.lng,lat:p.lat})?{label:p.label,area:p.label,location:{lng:p.lng,lat:p.lat}}:undefined
+ return {...d,vehicle:{...d.vehicle,...(d.vehiclePhotoPath?{photoUrl:publicFileUrl('vehicle-photos',d.vehiclePhotoPath)}:{})},commute:{...d.commute,originPlace:point(d.commute.originPlace),destinationPlace:point(d.commute.destinationPlace)}}
+}
+let draftQueue:Promise<void>=Promise.resolve()
+
 export const pilotMethods: Pick<LiftyApi,
- 'getAccountSnapshot'|'completeOnboarding'|'saveDriverSettings'|'listExceptions'|'deleteException'|'setPause'|
+ 'getAccountSnapshot'|'completeOnboarding'|'saveDriverSettings'|'saveDriverOnboardingDraft'|'getDriverOnboardingDraft'|'clearDriverOnboardingDraft'|'setDriverRequestsPaused'|'listExceptions'|'deleteException'|'setPause'|
  'requestPickupChange'|'listPickupChanges'|'reviewPickupChange'|'listContributions'|'reportContribution'|'confirmContribution'|'listHistory'|'setMatchAlert'|'getAdminHealth'|'suspendUser'> = {
  async getAccountSnapshot(){
   const {data,error}=await sb().auth.getSession()
   if(error) throw new ApiError(error.message,'auth')
   if(!data.session) return null
   const j=await pilotRpc('get_account_snapshot')
-  return j?mapAccount(j):null
+  if(!j)return null
+  const snapshot=mapAccount(j)
+  if(snapshot.user.role==='driver'&&!snapshot.onboarded)snapshot.driverDraft=await pilotMethods.getDriverOnboardingDraft()??undefined
+  return snapshot
  },
  async completeOnboarding(){await pilotRpc('complete_onboarding')},
+ async saveDriverOnboardingDraft(draft){
+  const owner=currentUserId,payload=draftToWire(draft)
+  const save=draftQueue.catch(()=>undefined).then(async()=>{
+   if(!owner||currentUserId!==owner)throw new ApiError('The account changed. Sign in again before saving setup.','auth')
+   await pilotRpc('save_driver_onboarding_draft',{p_draft:payload})
+  })
+  draftQueue=save;await save
+ },
+ async getDriverOnboardingDraft(){return draftFromWire(await pilotRpc('get_driver_onboarding_draft'))},
+ async clearDriverOnboardingDraft(){await pilotRpc('clear_driver_onboarding_draft')},
+ async setDriverRequestsPaused(legId,paused){await pilotRpc('set_driver_requests_paused',{p_leg:legId,p_paused:paused})},
  async saveDriverSettings(legId,input){await pilotRpc('save_driver_settings',{p_leg:legId,p_seats:input.seats,p_deviation:input.maxDeviationMin,p_contribution:input.monthlyContribution,p_departure:input.departureTime??null,p_days:input.days??null})},
  async listExceptions(){const {data:user}=await sb().auth.getUser();const {data,error}=await sb().from('schedule_exceptions').select('*').eq('user_id',user.user?.id??'').order('created_at');if(error)throw new ApiError(error.message,'server');return (data??[]).map(exception)},
  async deleteException(id){const {error}=await sb().from('schedule_exceptions').delete().eq('id',id);if(error)throw new ApiError(error.message,'server')},

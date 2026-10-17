@@ -4,7 +4,7 @@ import { AddressField, PhotoPicker } from '@/components/ui/extras'
 import { Avatar, Banner, DayPicker, Segmented, Select, TextField, Toggle, useToast } from '@/components/ui/kit'
 import { Icon, type IconName } from '@/components/ui/Icon'
 import { CommuteCalendar, type ScheduleValue } from '@/components/ui/CommuteCalendar'
-import { formatDays, formatDistance, rand } from '@/lib/format'
+import { formatDays, formatDistance, isoDate, rand } from '@/lib/format'
 import { api, contributionCap, suggestedContribution, type DocKind, type DriverSetupInput } from '@/services/api'
 import { directions } from '@/services/mapbox'
 import { hasMapbox } from '@/lib/env'
@@ -161,7 +161,8 @@ function PrivacyPoint({ icon, title, body }: { icon: IconName; title: string; bo
 export function DriverVehicle() {
   const nav = useNavigate()
   const { state, updateDriver } = useApp()
-  const [v, setV] = useState(state.driver.vehicle)
+  const v = state.driver.vehicle
+  const setV = (vehicle: typeof v) => updateDriver({ vehicle, seatsOpen: Math.min(state.driver.seatsOpen || vehicle.seats, vehicle.seats) })
   const set = (k: keyof typeof v) => (val: string) => setV({ ...v, [k]: k === 'seats' ? Number(val) : val })
   const ok = v.registration.length > 3 && v.make && v.model && v.year && v.colour
   return (
@@ -213,11 +214,12 @@ export function DriverCommute() {
 }
 
 /* 3/4 Verification documents */
-export function DriverVerification() {
+export function DriverVerification({ manage = false }: { manage?: boolean } = {}) {
   const nav = useNavigate()
   const toast = useToast()
   const { state, update, updateDriver } = useApp()
   const docs = state.driver.docs
+  const [expires, setExpires] = useState<Record<string,string>>({})
   const items: { key: keyof typeof docs; kind: DocKind; title: string; icon: IconName }[] = [
     { key: 'id', kind: 'id', title: 'South African ID', icon: 'doc' },
     { key: 'licence', kind: 'licence', title: "Driver's licence", icon: 'card' },
@@ -226,9 +228,17 @@ export function DriverVerification() {
   ]
   const all = Object.values(docs).every(Boolean)
   return (
-    <OnboardShell step={3} total={4} title="Verification documents" subtitle="Keep Lifty safe and trusted." onBack={() => nav(-1)} cta="Continue" disabled={!all} onNext={() => nav('/onboarding/driver/4')}>
+    <OnboardShell step={3} total={4} title="Verification documents" subtitle="Keep Lifty safe and trusted." onBack={() => nav(-1)} cta={manage ? 'Done' : 'Continue'} disabled={!manage && !all} onNext={() => nav(manage ? '/d/profile' : '/onboarding/driver/4')}>
       <div className="stack-3">
-        {items.map((it) => (
+        {items.map((it) => {
+          const current = state.driverDocuments.find(d => d.kind === it.kind)
+          const expired = !!current?.expiresOn && current.expiresOn < isoDate(0)
+          const status = expired ? 'Expired — replace this document' : current?.status === 'verified' ? 'Approved by reviewer' : current?.status === 'rejected' ? 'Rejected — please replace' : docs[it.key] ? 'Pending human review' : 'Not submitted'
+          return <div className="card stack-2" key={it.key}>
+          <p className="small" role="status"><strong>{it.title}:</strong> {status}</p>
+          {current?.reviewNote && <p className="small muted">Reviewer: {current.reviewNote}</p>}
+          {current && <p className="small muted">{current.expiresOn ? `Expires ${current.expiresOn}` : 'Expiry date not recorded'}</p>}
+          {(it.kind === 'licence' || it.kind === 'insurance') && <TextField type="date" label={`${it.title} expiry date`} min={isoDate(0)} value={expires[it.kind] ?? ''} onChange={value => setExpires(x => ({...x,[it.kind]:value}))} hint="Enter the expiry shown on the document before uploading. A reviewer checks it." />}
           <PhotoPicker
             key={it.key}
             label={it.title}
@@ -236,16 +246,19 @@ export function DriverVerification() {
             icon={it.icon}
             accept="image/*,application/pdf"
             capture
-            done={docs[it.key]}
+            done={docs[it.key] && !expired && current?.status !== 'rejected'}
             onFile={async (f) => {
-              await api.uploadDocument(it.kind, f, it.kind === 'vehicle_registration' ? state.driver.vehicle.registration : undefined)
+              const expiry = expires[it.kind]
+              if ((it.kind === 'licence' || it.kind === 'insurance') && (!expiry || expiry < isoDate(0))) throw new Error('Enter a valid expiry date before uploading this document.')
+              await api.uploadDocument(it.kind, f, it.kind === 'vehicle_registration' ? state.driver.vehicle.registration : undefined, expiry)
               updateDriver({ docs: { ...state.driver.docs, [it.key]: true } })
               const key=it.key==='id'?'identity':it.key==='registration'?'vehicle':it.key
-              update({verification:{...state.verification,[key]:'pending'}})
+              update({verification:{...state.verification,[key]:'pending'},driverDocuments:[...state.driverDocuments.filter(d=>d.kind!==it.kind),{kind:it.kind,status:'pending',expiresOn:expiry}]})
               toast(`${it.title} uploaded`, 'success')
             }}
           />
-        ))}
+          </div>
+        })}
         <Banner tone="info" icon="lock">Uploads remain pending until a human reviewer approves all four current documents. Passengers see verification status; your documents stay private.</Banner>
       </div>
     </OnboardShell>

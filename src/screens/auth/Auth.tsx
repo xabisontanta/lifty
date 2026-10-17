@@ -308,7 +308,7 @@ export function Otp() {
       const onboarded = profile?.onboarded ?? false
       if (!profile) throw new ApiError('Your account could not be restored. Please sign in again.', 'auth')
       await refreshAccount()
-      nav(onboarded ? (role === 'driver' ? '/d/home' : '/p/home') : role === 'driver' ? '/onboarding/driver/1' : '/onboarding/passenger/1', { replace: true })
+      nav(onboarded ? (role === 'driver' ? '/d/home' : '/p/home') : role === 'driver' ? `/onboarding/driver/${profile.driverDraft?.step??1}` : '/onboarding/passenger/1', { replace: true })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not verify your code.')
     } finally {

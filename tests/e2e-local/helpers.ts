@@ -24,17 +24,20 @@ export function sql(query: string): string {
 /**
  * Remove whatever accounts earlier runs left on the three reserved fake numbers (they exist only in this sandbox). The names
  * the tests sign up with differ from test to test, so the NUMBER decides — a name filter left two accounts behind and broke
- * the next run. Seats held by their memberships are handed back first, exactly as the real erasure path
- * (finalize_account_deletion) does: a plain delete leaves the drivers' seat counters short, and run after run fixture drivers
- * would vanish from results.
+ * the next run. Capture held seats, remove those accounts, then return the seats in one transaction.
+ * Returning seats while memberships still exist would exceed the vehicle capacity with two riders.
+ * A plain delete leaves counters short and eventually hides fixture drivers from matching.
  */
 const reservedPhones = pairs.slice(0, 3).map((p) => `'${p.digits}'`).join(',')
 export const resetTestUsers = () => sql(`
-  update public.driver_legs l set seats_open = l.seats_open + m.n
-    from (select cm.leg_id, count(*) n from public.club_members cm join auth.users u on u.id = cm.passenger_id
-          where cm.active and u.phone in (${reservedPhones}) group by cm.leg_id) m
-    where l.id = m.leg_id;
+  begin;
+  create temporary table lifty_reserved_seats on commit drop as
+    select cm.leg_id, count(*) n from public.club_members cm join auth.users u on u.id = cm.passenger_id
+    where cm.active and u.phone in (${reservedPhones}) group by cm.leg_id;
   delete from auth.users where phone in (${reservedPhones});
+  update public.driver_legs l set seats_open = l.seats_open + m.n
+    from lifty_reserved_seats m where l.id = m.leg_id;
+  commit;
 `)
 export const userId = (p: { digits: string }) => sql(`select id from auth.users where phone = '${p.digits}'`)
 

@@ -244,6 +244,7 @@ export type Database = {
                     "monthly_contribution": number;
                     "origin": unknown;
                     "origin_label": string;
+                    "requests_paused": boolean;
                     "route": unknown;
                     "route_distance_m": number;
                     "route_duration_s": number;
@@ -266,6 +267,7 @@ export type Database = {
                     "monthly_contribution": number;
                     "origin": unknown;
                     "origin_label": string;
+                    "requests_paused"?: boolean;
                     "route": unknown;
                     "route_distance_m": number;
                     "route_duration_s": number;
@@ -286,6 +288,7 @@ export type Database = {
                     "monthly_contribution"?: number;
                     "origin"?: unknown;
                     "origin_label"?: string;
+                    "requests_paused"?: boolean;
                     "route"?: unknown;
                     "route_distance_m"?: number;
                     "route_duration_s"?: number;
@@ -604,6 +607,7 @@ export type Database = {
                     "id": string;
                     "is_test": boolean;
                     "leg_id": string;
+                    "message_seq": number;
                     "sender_id": string;
                 };
                 ComputedFields: never;
@@ -613,6 +617,7 @@ export type Database = {
                     "id"?: string;
                     "is_test"?: boolean;
                     "leg_id": string;
+                    "message_seq"?: never;
                     "sender_id": string;
                 };
                 Update: {
@@ -621,6 +626,7 @@ export type Database = {
                     "id"?: string;
                     "is_test"?: boolean;
                     "leg_id"?: string;
+                    "message_seq"?: never;
                     "sender_id"?: string;
                 };
                 Relationships: [
@@ -657,8 +663,10 @@ export type Database = {
                     "kind": string;
                     "link": string | null;
                     "read_at": string | null;
+                    "source_document_id": string | null;
                     "source_instance_id": string | null;
                     "source_leg_id": string | null;
+                    "source_message_id": string | null;
                     "title": string;
                     "user_id": string;
                 };
@@ -671,8 +679,10 @@ export type Database = {
                     "kind": string;
                     "link"?: string | null;
                     "read_at"?: string | null;
+                    "source_document_id"?: string | null;
                     "source_instance_id"?: string | null;
                     "source_leg_id"?: string | null;
+                    "source_message_id"?: string | null;
                     "title": string;
                     "user_id": string;
                 };
@@ -684,12 +694,25 @@ export type Database = {
                     "kind"?: string;
                     "link"?: string | null;
                     "read_at"?: string | null;
+                    "source_document_id"?: string | null;
                     "source_instance_id"?: string | null;
                     "source_leg_id"?: string | null;
+                    "source_message_id"?: string | null;
                     "title"?: string;
                     "user_id"?: string;
                 };
                 Relationships: [
+                    {
+                        foreignKeyName: "notifications_source_document_id_fkey";
+                        columns: [
+                            "source_document_id"
+                        ];
+                        isOneToOne: false;
+                        referencedRelation: "verification_documents";
+                        referencedColumns: [
+                            "id"
+                        ];
+                    },
                     {
                         foreignKeyName: "notifications_source_instance_id_fkey";
                         columns: [
@@ -708,6 +731,17 @@ export type Database = {
                         ];
                         isOneToOne: false;
                         referencedRelation: "driver_legs";
+                        referencedColumns: [
+                            "id"
+                        ];
+                    },
+                    {
+                        foreignKeyName: "notifications_source_message_id_fkey";
+                        columns: [
+                            "source_message_id"
+                        ];
+                        isOneToOne: false;
+                        referencedRelation: "messages";
                         referencedColumns: [
                             "id"
                         ];
@@ -1337,6 +1371,7 @@ export type Database = {
                 Row: {
                     "created_at": string;
                     "detail": string | null;
+                    "expires_on": string | null;
                     "id": string;
                     "is_test": boolean;
                     "kind": Database["public"]["Enums"]["doc_kind"];
@@ -1352,6 +1387,7 @@ export type Database = {
                 Insert: {
                     "created_at"?: string;
                     "detail"?: string | null;
+                    "expires_on"?: string | null;
                     "id"?: string;
                     "is_test"?: boolean;
                     "kind": Database["public"]["Enums"]["doc_kind"];
@@ -1366,6 +1402,7 @@ export type Database = {
                 Update: {
                     "created_at"?: string;
                     "detail"?: string | null;
+                    "expires_on"?: string | null;
                     "id"?: string;
                     "is_test"?: boolean;
                     "kind"?: Database["public"]["Enums"]["doc_kind"];
@@ -1491,6 +1528,10 @@ export type Database = {
                 };
                 Returns: Json[];
             };
+            "clear_driver_onboarding_draft": {
+                Args: Record<PropertyKey, never>;
+                Returns: undefined;
+            };
             "commute_booked_on": {
                 Args: {
                     "c": Omit<Database["public"]["Tables"]["passenger_commutes"]["Row"], Database["public"]["Tables"]["passenger_commutes"]["ComputedFields"]>;
@@ -1605,6 +1646,10 @@ export type Database = {
                 Args: Record<PropertyKey, never>;
                 Returns: Json;
             };
+            "get_driver_onboarding_draft": {
+                Args: Record<PropertyKey, never>;
+                Returns: Json;
+            };
             "get_driver_trip_stats": {
                 Args: {
                     "p_driver": string;
@@ -1660,6 +1705,10 @@ export type Database = {
                 };
                 Returns: string;
             };
+            "list_chat_summaries": {
+                Args: Record<PropertyKey, never>;
+                Returns: Json[];
+            };
             "list_incoming_requests": {
                 Args: Record<PropertyKey, never>;
                 Returns: Json[];
@@ -1683,6 +1732,13 @@ export type Database = {
             "list_safety_reports": {
                 Args: Record<PropertyKey, never>;
                 Returns: Json[];
+            };
+            "mark_club_read": {
+                Args: {
+                    "p_leg": string;
+                    "p_message"?: string;
+                };
+                Returns: undefined;
             };
             "mark_contribution_paid": {
                 Args: {
@@ -1859,6 +1915,12 @@ export type Database = {
                 Args: Record<PropertyKey, never>;
                 Returns: undefined;
             };
+            "save_driver_onboarding_draft": {
+                Args: {
+                    "p_draft": Json;
+                };
+                Returns: undefined;
+            };
             "save_driver_settings": {
                 Args: {
                     "p_contribution": number;
@@ -1870,7 +1932,22 @@ export type Database = {
                 };
                 Returns: undefined;
             };
+            "send_club_message": {
+                Args: {
+                    "p_body": string;
+                    "p_leg": string;
+                    "p_message": string;
+                };
+                Returns: Json;
+            };
             "set_club_pause": {
+                Args: {
+                    "p_leg": string;
+                    "p_paused": boolean;
+                };
+                Returns: undefined;
+            };
+            "set_driver_requests_paused": {
                 Args: {
                     "p_leg": string;
                     "p_paused": boolean;

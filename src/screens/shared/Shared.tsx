@@ -11,7 +11,7 @@ import type { ExceptionKind } from '@/domain/types'
 import { isoDate, rand, timeAgo } from '@/lib/format'
 import { useAsync } from '@/hooks/useAsync'
 import { api, type ChatMessage, type PendingDocument, type SafetyReport } from '@/services/api'
-import {mergeMessages} from '@/lib/chat'
+import {mergeMessages,outgoingMessage,unconfirmedMessages,type OutgoingMessage} from '@/lib/chat'
 import {exportArchive} from '@/services/dataExport'
 import { useApp } from '@/store/app'
 
@@ -239,51 +239,107 @@ export function Chat() {
   const loc = useLocation()
   const { id = '' } = useParams()
   const name = (loc.state as { name?: string } | null)?.name ?? 'Lift club'
-  const { data, loading, error, retry } = useAsync(() => api.listMessages(id), [id])
+  const {state}=useApp()
+  const { data, loading, error, retry } = useAsync(async () => ({clubId:id,accountId:state.user?.id,messages:await api.listMessages(id)}), [id,state.user?.id])
   const [msgs, setMsgs] = useState<ChatMessage[]>([])
+  const [pending,setPending]=useState<OutgoingMessage[]>([])
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [syncError,setSyncError]=useState('')
+  const [olderBusy,setOlderBusy]=useState(false)
+  const [hasOlder,setHasOlder]=useState(false)
+  const busy=useRef(false)
+  const generation=useRef(0)
+  const readCursor=useRef('')
   const end = useRef<HTMLDivElement>(null)
-  useEffect(()=>{setMsgs([])},[id])
-  useEffect(() => { if (data) setMsgs(prev=>mergeMessages(prev,data)) }, [data])
-  useEffect(() => api.subscribeMessages(id, (m) => setMsgs((x) => mergeMessages(x,[m]))), [id])
-  useEffect(() => { end.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs])
-  const send = async () => {
-    const t = text.trim()
-    if (!t) return
-    setText('')
+  useEffect(()=>{generation.current++;setMsgs([]);setPending([]);setText('');setSending(false);setSyncError('');readCursor.current='';busy.current=false},[id,state.user?.id])
+  useEffect(() => {
+    if (data?.clubId===id&&data.accountId===state.user?.id){setMsgs(prev=>mergeMessages(prev,data.messages));setHasOlder(data.messages.length===100)}
+  }, [data,id,state.user?.id])
+  useEffect(() => api.subscribeMessages(id, (m) => setMsgs((x) => mergeMessages(x,[m]))), [id,state.user?.id])
+  useEffect(()=>{setPending(current=>unconfirmedMessages(current,msgs))},[msgs])
+  useEffect(()=>{
+    let active=true
+    const catchUp=()=>{
+      if(document.visibilityState==='hidden')return
+      void api.listMessages(id).then(messages=>{if(active){setMsgs(current=>mergeMessages(current,messages));setSyncError('')}}).catch(()=>{if(active)setSyncError('Could not refresh this conversation. Check your connection and try again.')})
+    }
+    window.addEventListener('focus',catchUp);window.addEventListener('online',catchUp)
+    document.addEventListener('visibilitychange',catchUp)
+    const timer=window.setInterval(catchUp,30_000)
+    return ()=>{active=false;window.clearInterval(timer);window.removeEventListener('focus',catchUp);window.removeEventListener('online',catchUp);document.removeEventListener('visibilitychange',catchUp)}
+  },[id,state.user?.id])
+  useEffect(()=>{
+    let active=true
+    const latest=msgs[msgs.length-1]
+    const markRead=()=>{
+      if(!latest||document.visibilityState==='hidden'||readCursor.current===latest.id)return
+      readCursor.current=latest.id
+      void api.markClubRead(id,latest.id).then(()=>{if(active)window.dispatchEvent(new Event('lifty:chat-read'))}).catch(()=>{if(active&&readCursor.current===latest.id)readCursor.current=''})
+    }
+    markRead();document.addEventListener('visibilitychange',markRead);window.addEventListener('focus',markRead)
+    const timer=window.setInterval(markRead,15_000)
+    return ()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',markRead);window.removeEventListener('focus',markRead)}
+  },[id,msgs])
+  useEffect(() => { end.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs,pending.length])
+  const send = async (previous?:OutgoingMessage) => {
+    const t = previous?.body??text.trim()
+    if (!t||busy.current||error||!state.user?.id) return
+    const outgoing=previous?{...previous,status:'sending' as const,error:undefined}:outgoingMessage(crypto.randomUUID(),t,state.user?.id??'',Date.now())
+    const currentGeneration=generation.current
+    busy.current=true
+    if(!previous)setText('')
+    setPending(current=>[...current.filter(m=>m.id!==outgoing.id),outgoing])
     setSending(true)
     try {
-      // the new message arrives back through the realtime subscription
-      await api.sendMessage(id, t)
-      retry()
-    } catch {
-      setText(t)
+      await api.sendMessage(id, t,outgoing.id)
+      if(currentGeneration!==generation.current)return
+      setPending(current=>current.map(m=>m.id===outgoing.id?{...m,status:'sent',error:undefined}:m))
+      void api.listMessages(id).then(messages=>{if(currentGeneration===generation.current)setMsgs(current=>mergeMessages(current,messages))}).catch(()=>{})
+    } catch (e) {
+      if(currentGeneration===generation.current)setPending(current=>current.map(m=>m.id===outgoing.id?{...m,status:'failed',error:e instanceof Error?e.message:'Message could not be sent. Check your connection.'}:m))
     } finally {
-      setSending(false)
+      if(currentGeneration===generation.current){setSending(false);busy.current=false}
     }
   }
+  const loadOlder=async()=>{
+    if(!msgs[0]||olderBusy)return
+    const currentGeneration=generation.current
+    setOlderBusy(true)
+    try{
+      const older=await api.listMessages(id,msgs[0].createdAt,msgs[0].sequence)
+      if(currentGeneration===generation.current){setMsgs(current=>mergeMessages(current,older));setHasOlder(older.length===100)}
+    }catch(e){if(currentGeneration===generation.current)setSyncError(e instanceof Error?e.message:'Older messages could not be loaded.')}
+    finally{if(currentGeneration===generation.current)setOlderBusy(false)}
+  }
+  const visibleMessages=mergeMessages(pending,msgs)
   return (
     <Screen>
-      <ScreenHeader title={name} subtitle="Lift club chat · numbers stay private" onBack={() => nav(-1)} />
+      <ScreenHeader title={name} subtitle="Group chat · driver and accepted passengers" onBack={() => nav(-1)} />
       <ScreenBody>
-        {loading ? <CardSkeleton /> : error ? <ErrorState message={error.message} onRetry={retry} /> : (
+        <p className="muted small" style={{marginBottom:12}}>Messages are shared with this lift club group. Phone numbers stay private.</p>
+        {syncError&&<ErrorState message={syncError} onRetry={()=>{setSyncError('');retry()}}/>}
+        {error&&<ErrorState message={error.message} onRetry={retry}/>}
+        {loading&&msgs.length===0?<CardSkeleton/>:(
           <div className="stack-2">
-            {msgs.length === 0 && <p className="muted small center">Say hello — agree on the pickup spot and timing here.</p>}
-            {msgs.length>=100&&<SecondaryButton onClick={async()=>{const older=await api.listMessages(id,msgs[0].createdAt);setMsgs(current=>mergeMessages(current,older))}}>Load older messages</SecondaryButton>}
-            {msgs.map((m) => (
+            {!error&&visibleMessages.length === 0 && <p className="muted small center">Say hello — agree on the pickup spot and timing here.</p>}
+            {hasOlder&&msgs.length>0&&<SecondaryButton loading={olderBusy} onClick={()=>void loadOlder()}>Load older messages</SecondaryButton>}
+            {visibleMessages.map((m) => {
+              const delivery=pending.find(p=>p.id===m.id)
+              return (
               <div key={m.id} style={{ justifySelf: m.mine ? 'end' : 'start', maxWidth: '82%' }}>
-                <div style={{ padding: '10px 14px', borderRadius: 18, background: m.mine ? 'var(--teal)' : '#fff', color: m.mine ? '#fff' : 'var(--text)', boxShadow: 'var(--shadow-1)' }}>{m.body}</div>
-                <p className="tiny muted" style={{ textAlign: m.mine ? 'right' : 'left', marginTop: 2 }}>{!m.mine && m.senderName ? `${m.senderName} · ` : ''}{timeAgo(m.createdAt)}</p>
+                <div style={{ padding: '10px 14px', borderRadius: 18, background: m.mine ? 'var(--teal)' : '#fff', color: m.mine ? '#fff' : 'var(--text)', boxShadow: 'var(--shadow-1)',whiteSpace:'pre-wrap',overflowWrap:'anywhere' }}>{m.body}</div>
+                <p className="tiny muted" style={{ textAlign: m.mine ? 'right' : 'left', marginTop: 2 }} aria-live={delivery?'polite':undefined}>{!m.mine && m.senderName ? `${m.senderName} · ` : ''}{delivery?.status==='sending'?'Sending…':delivery?.status==='failed'?'Not sent':m.mine?'Sent · '+timeAgo(m.createdAt):timeAgo(m.createdAt)}</p>
+                {delivery?.status==='failed'&&<div role="alert"><p className="small muted">{delivery.error}</p><TextButton disabled={sending} onClick={()=>void send(delivery)}>Retry message</TextButton></div>}
               </div>
-            ))}
+            )})}
             <div ref={end} />
           </div>
         )}
       </ScreenBody>
       <footer className="screen-footer" style={{ gridAutoFlow: 'column', gridTemplateColumns: '1fr auto', alignItems: 'center' }}>
-        <div className="field-box"><input aria-label="Message" value={text} placeholder="Write a message…" maxLength={1000} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void send()} /></div>
-        <button className="icon-btn" aria-label="Send" disabled={sending} onClick={() => void send()} style={{ background: 'var(--teal)', color: '#fff', width: 52, height: 52 }}><Icon name="navigation" size={22} /></button>
+        <div className="field-box"><input aria-label="Message" value={text} placeholder="Write a message…" maxLength={1000} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => {if(e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();void send()}}} /></div>
+        <button className="icon-btn" aria-label="Send" disabled={sending||!text.trim()||!!error} aria-busy={sending||undefined} onClick={() => void send()} style={{ background: 'var(--teal)', color: '#fff', width: 52, height: 52 }}><Icon name="navigation" size={22} /></button>
       </footer>
     </Screen>
   )
@@ -452,6 +508,7 @@ export function Admin() {
           <div className="stack-3">
             {url ? (/\.pdf($|\?)/i.test(url) ? <a className="btn btn-secondary btn-block" href={url} target="_blank" rel="noreferrer">Open PDF</a> : <img className="doc-preview" src={url} alt="Uploaded document" />) : <p className="muted small">Loading document…</p>}
             {open.detail && <p className="small">Detail: <strong>{open.detail}</strong></p>}
+            <p className="small">Expiry recorded by driver: <strong>{open.expiresOn ?? 'Not recorded'}</strong>. Check this against the uploaded document before approving.</p>
             <TextField label="Note to driver (if rejecting)" value={note} onChange={setNote} placeholder="e.g. Photo is blurry — please retake" />
             <LiftyButton icon="check" onClick={() => review(true)}>Approve</LiftyButton>
             <SecondaryButton tone="danger" onClick={() => review(false)}>Reject</SecondaryButton>

@@ -2,6 +2,8 @@
 
 Lifty matches recurring commuters with approved drivers along their route. The app uses React 18, TypeScript and Vite, with Capacitor 8 for Android. Designs are in [design/README.md](design/README.md).
 
+The driver review branch and local preview instructions are documented in [Driver pilot review](docs/driver-pilot-review.md). Keep main and the hosted project unchanged until preview review and the remaining device/provider checks are complete.
+
 ## Development
 
 Use Node 24 and npm. Docker is required for the isolated backend.

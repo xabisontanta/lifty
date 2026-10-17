@@ -179,6 +179,8 @@ function toInstance(j: J): CommuteInstance {
     direction:j.direction,
     status: j.status,
     isDriver: !!j.isDriver,
+    verificationHold: !!j.verificationHold,
+    verificationHoldReason: j.verificationHoldReason,
     departsAt: new Date(j.departsAt).getTime(),
     sharingStartsAt: new Date(j.sharingStartsAt).getTime(),
     sharingEndsAt: new Date(j.sharingEndsAt).getTime(),
@@ -347,13 +349,13 @@ export const liveApi: LiftyApi = {
     else await sb().from('vehicles').update({ photo_path: path }).eq('driver_id', me)
     return publicFileUrl(bucket, path)!
   },
-  async uploadDocument(kind, file, detail) {
+  async uploadDocument(kind, file, detail, expiresOn) {
     const me = await uid()
     const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
     const path = `${me}/${kind}-${Date.now()}.${ext}`
     const up = await sb().storage.from('kyc').upload(path, file, { contentType: file.type })
     if (up.error) fail(up.error)
-    const { error } = await sb().from('verification_documents').insert({ user_id: me, kind, storage_path: path, detail: detail ?? null })
+    const { error } = await sb().from('verification_documents').insert({ user_id: me, kind, storage_path: path, detail: detail ?? null, expires_on: expiresOn ?? null })
     if (error) fail(error)
   },
   async setConsent({ location, terms, emergencyContact, lowData }) {
@@ -489,6 +491,7 @@ export const liveApi: LiftyApi = {
     })
     const asDriver: DriverLegSummary[] = (data.asDriver as J[]).map((l) => ({
       legId: l.legId,
+      requestsPaused: !!l.requestsPaused,
       direction: l.direction,
       originLabel: l.originLabel,
       destinationLabel: l.destinationLabel,
@@ -499,8 +502,9 @@ export const liveApi: LiftyApi = {
       monthlyContribution: Number(l.monthlyContribution),
       routeDistanceM: Number(l.routeDistanceM),
       route: line(l.route),
-      members: ((l.members ?? []) as J[]).map((m) => ({ id: m.id, firstName: m.firstName, lastInitial: m.lastInitial ?? '', avatarHue: hueFor(m.id), avatarUrl: publicFileUrl('avatars', m.avatarPath), pickupLabel: m.pickupLabel, pickupTime: m.pickupTime, paymentStatus: (m.paymentStatus ?? 'upcoming') as PaymentStatus })),
+      members: ((l.members ?? []) as J[]).map((m) => ({ id: m.id, firstName: m.firstName, lastInitial: m.lastInitial ?? '', avatarHue: hueFor(m.id), avatarUrl: publicFileUrl('avatars', m.avatarPath), pickupLabel: m.pickupLabel, pickupTime: m.pickupTime, monthlyContribution:m.monthlyContribution==null?undefined:Number(m.monthlyContribution), paymentStatus: (m.paymentStatus ?? 'upcoming') as PaymentStatus })),
     }))
+    asDriver.sort((a,b)=>a.direction===b.direction?a.legId.localeCompare(b.legId):a.direction==='to_work'?-1:1)
     return { asPassenger, asDriver }
   },
   async listIncomingRequests(): Promise<IncomingRequest[]> {
@@ -508,6 +512,8 @@ export const liveApi: LiftyApi = {
     if (error) fail(error)
     return (data as J[]).map((r) => ({
       id: r.id,
+      legId: r.legId,
+      direction: r.direction,
       passenger: { id: r.passenger.id, firstName: r.passenger.firstName, lastInitial: r.passenger.lastInitial ?? '', avatarHue: hueFor(r.passenger.id), rating: Number(r.passenger.rating), ratingCount: Number(r.passenger.ratingCount), verified: !!r.passenger.verified, area: r.pickup?.label ?? '', reliability: Number(r.passenger.reliability ?? 100) },
       pickup: toPlace(r.pickup),
       destination: toPlace(r.destination),
@@ -554,19 +560,23 @@ export const liveApi: LiftyApi = {
     return data ? toInstance(data) : null
   },
 
-  async listMessages(clubId,before) {
+  async listMessages(clubId,before,beforeSequence) {
     const me = await uid()
-    let query=sb().from('messages').select('id, sender_id, body, created_at, sender:profiles(first_name)').eq('leg_id',clubId).order('created_at',{ascending:false}).limit(100)
-    if(before)query=query.lt('created_at',new Date(before).toISOString())
+    let query=sb().from('messages').select('id, message_seq, sender_id, body, created_at, sender:profiles(first_name)').eq('leg_id',clubId).order('message_seq',{ascending:false}).limit(100)
+    if(beforeSequence!=null)query=query.lt('message_seq',beforeSequence)
+    else if(before)query=query.lt('created_at',new Date(before).toISOString())
     const {data,error}=await query
     if (error) fail(error)
-    return (data as J[]).reverse().map((m) => ({ id: m.id, senderId: m.sender_id, senderName: m.sender?.first_name ?? '', body: m.body, createdAt: new Date(m.created_at).getTime(), mine: m.sender_id === me }))
+    return (data as J[]).reverse().map((m) => ({ id: m.id, sequence:m.message_seq==null?undefined:Number(m.message_seq), senderId: m.sender_id, senderName: m.sender?.first_name ?? '', body: m.body, createdAt: new Date(m.created_at).getTime(), mine: m.sender_id === me }))
   },
-  async sendMessage(clubId, body) {
-    const me = await uid()
-    const { error } = await sb().from('messages').insert({ leg_id: clubId, sender_id: me, body })
+  async sendMessage(clubId, body, messageId = crypto.randomUUID()) {
+    const { error } = await sb().rpc('send_club_message', { p_leg: clubId, p_message: messageId, p_body: body })
     if (error) fail(error)
   },
+  async markClubRead(clubId, messageId) {
+    await pilotRpc('mark_club_read', { p_leg: clubId, p_message: messageId ?? null })
+  },
+  async listChatSummaries() { return await pilotRpc('list_chat_summaries') },
   subscribeMessages(clubId, onMessage) {
     let me = currentUserId??''
     let active=true
@@ -576,8 +586,8 @@ export const liveApi: LiftyApi = {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `leg_id=eq.${clubId}` }, (p) => {
         const m = p.new as J
         if(!active)return
-        onMessage({ id: m.id, senderId: m.sender_id, senderName: '', body: m.body, createdAt: new Date(m.created_at).getTime(), mine: m.sender_id === me })
-        void sb().from('profiles').select('first_name').eq('id',m.sender_id).maybeSingle().then(({data})=>{if(active&&data)onMessage({id:m.id,senderId:m.sender_id,senderName:data.first_name,body:m.body,createdAt:new Date(m.created_at).getTime(),mine:m.sender_id===me})})
+        onMessage({ id: m.id, sequence:Number(m.message_seq), senderId: m.sender_id, senderName: '', body: m.body, createdAt: new Date(m.created_at).getTime(), mine: m.sender_id === me })
+        void sb().from('profiles').select('first_name').eq('id',m.sender_id).maybeSingle().then(({data})=>{if(active&&data)onMessage({id:m.id,sequence:Number(m.message_seq),senderId:m.sender_id,senderName:data.first_name,body:m.body,createdAt:new Date(m.created_at).getTime(),mine:m.sender_id===me})})
       })
       .subscribe(status=>{if(status==='SUBSCRIBED')void liveApi.listMessages(clubId).then(ms=>{if(active)ms.forEach(onMessage)}).catch(()=>{})})
     return () => {active=false;void sb().removeChannel(ch)}
@@ -599,7 +609,7 @@ export const liveApi: LiftyApi = {
       .then((me) => {
         if(!active)return
         ch = sb()
-          .channel(`notifications:${me}`)
+          .channel(`notifications:${me}:${crypto.randomUUID()}`)
           .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${me}` }, (p) => {
             if(!active)return
             const n = p.new as J
@@ -648,7 +658,7 @@ export const liveApi: LiftyApi = {
     if (error) return false
     return !!data
   },
-  async listPendingDocuments(){return await pilotRpc('list_pending_documents')},
+  async listPendingDocuments(){return (await pilotRpc('list_pending_documents')).map((d:J)=>({...d,expiresOn:d.expiresOn??d.expires_on??undefined}))},
   async documentUrl(path) {
     if (!path) return null
     const { data } = await sb().storage.from('kyc').createSignedUrl(path, 300)

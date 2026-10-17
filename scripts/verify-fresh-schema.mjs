@@ -29,7 +29,7 @@ const sql=query=>execFileSync('docker',['exec','-i',container,'psql','-U','postg
 const inspect=JSON.parse(execFileSync('docker',['inspect',container],{encoding:'utf8'}))[0]
 if(inspect?.NetworkSettings?.Ports?.['5432/tcp']?.[0]?.HostPort!=='58322')throw new Error('Fresh replay container does not have the expected local port.')
 console.log(sql(`select jsonb_build_object('migrations',(select count(*) from supabase_migrations.schema_migrations),'test_drivers',(select count(*) from public.profiles where is_test and role='driver'),'routes',(select count(*) from public.driver_legs),'reviews',(select count(*) from public.ratings),'schema_replay','local-only');`))
-for(const test of ['test_driver_isolation.sql','test_driver_lifecycle.sql','test_driver_safety.sql']) {
+for(const test of ['test_driver_isolation.sql','test_driver_lifecycle.sql','test_driver_safety.sql','driver_pilot_hardening.sql','driver_verification_trip_hold.sql']) {
  const source=readFileSync(resolve('supabase/tests',test),'utf8').replaceAll('__SAFE_CLEANUP_SQL__',()=>readFileSync('supabase/remove-test-drivers-local.sql','utf8'))
  const output=sql(source)
  console.log(output.split(/\r?\n/).filter(line=>line.includes('"suite"')).join('\n'))

@@ -193,9 +193,10 @@ export function StatusBadge({ tone = 'neutral', icon, children }: { tone?: Tone;
   )
 }
 
-export function VerificationBadge({ label = 'Verified Driver', status = 'verified' }: { label?: string; status?: 'verified' | 'pending' | 'unverified' }) {
+export function VerificationBadge({ label = 'Verified Driver', status = 'verified' }: { label?: string; status?: 'verified' | 'pending' | 'unverified' | 'expired' }) {
   if (status === 'verified') return <StatusBadge tone="success" icon="shieldCheck">{label}</StatusBadge>
   if (status === 'pending') return <StatusBadge tone="warning" icon="clock">{label.replace('Verified', 'Pending')}</StatusBadge>
+  if (status === 'expired') return <StatusBadge tone="warning" icon="clock">Document expired</StatusBadge>
   return <StatusBadge tone="neutral" icon="info">Not verified</StatusBadge>
 }
 

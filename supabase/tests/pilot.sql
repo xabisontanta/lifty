@@ -28,7 +28,7 @@ insert into public.profiles(id,role,first_name,is_demo) values(d,'driver','Pilot
  values(p,'to_work','Home','SRID=4326;POINT(31.14 -29.55)','Work','SRID=4326;POINT(31.07 -29.72)',array[0,2,5]::smallint[],'07:30',0,day) returning id into c;
  perform set_config('request.jwt.claim.sub',p::text,true);perform set_config('request.jwt.claims',jsonb_build_object('sub',p,'role','authenticated')::text,true);
  if exists(select 1 from public.find_matches(c)) then raise exception 'FAIL unapproved driver matched';end if;checks:=checks+1;
- insert into public.verification_documents(user_id,kind,storage_path,status) select d,kind,d||'/'||kind,'verified' from unnest(array['id','licence','vehicle_registration','insurance']::public.doc_kind[])kind;
+ insert into public.verification_documents(user_id,kind,storage_path,status,expires_on) select d,kind,d||'/'||kind,'verified',current_date+365 from unnest(array['id','licence','vehicle_registration','insurance']::public.doc_kind[])kind;
  if not public.driver_approved(d) then raise exception 'FAIL four latest approvals required';end if;checks:=checks+1;
  select * into item from public.find_matches(c) limit 1;
  if item is null or not(item->'uncoveredDays' @> '[5]') or not(item->'coveredDays' @> '[0,2]') then raise exception 'FAIL partial coverage: %',item;end if;checks:=checks+1;
@@ -158,7 +158,7 @@ insert into public.profiles(id,role,first_name,is_demo) values(d,'driver','Pilot
  if not failed then raise exception 'FAIL duplicate rating';end if;checks:=checks+1;
  failed:=false;begin insert into public.ratings(rater_id,ratee_id,leg_id,instance_id,stars) values(p2,d,l,trip,5);exception when others then failed:=true;end;
  if not failed then raise exception 'FAIL unrelated rating';end if;checks:=checks+1;
- insert into public.verification_documents(user_id,kind,storage_path) values(d,'licence',d||'/replacement') returning id into doc;
+ insert into public.verification_documents(user_id,kind,storage_path,expires_on) values(d,'licence',d||'/replacement',current_date+365) returning id into doc;
  if public.driver_approved(d) then raise exception 'FAIL replacement retains approval';end if;checks:=checks+1;
  insert into public.admins(user_id) values(outsider);
  select id into old_doc from public.verification_documents where user_id=d and kind='licence' and id<>doc order by submitted_seq limit 1;

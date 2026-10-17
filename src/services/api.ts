@@ -39,6 +39,7 @@ export interface DriverSetupInput {
 
 export interface DriverLegSummary {
   legId: string
+  requestsPaused: boolean
   direction: LegDirection
   originLabel: string
   destinationLabel: string
@@ -49,7 +50,7 @@ export interface DriverLegSummary {
   monthlyContribution: number
   routeDistanceM: number
   route: LatLng[]
-  members: { id: string; firstName: string; lastInitial: string; avatarHue: number; avatarUrl?: string; pickupLabel: string; pickupTime: string; paymentStatus: PaymentStatus }[]
+  members: { id: string; firstName: string; lastInitial: string; avatarHue: number; avatarUrl?: string; pickupLabel: string; pickupTime: string; monthlyContribution?: number; paymentStatus: PaymentStatus }[]
 }
 
 export interface CommuteInstance {
@@ -58,6 +59,8 @@ export interface CommuteInstance {
   direction: LegDirection
   status: 'scheduled' | 'sharing' | 'underway' | 'completed' | 'cancelled'
   isDriver: boolean
+  verificationHold?: boolean
+  verificationHoldReason?: 'expired' | 'suspended' | 'unapproved'
   departsAt: number
   sharingStartsAt: number
   sharingEndsAt: number
@@ -82,11 +85,42 @@ export interface AppNotification {
 
 export interface ChatMessage {
   id: string
+  sequence?: number
   senderId: string
   senderName: string
   body: string
   createdAt: number
   mine: boolean
+}
+
+export interface ChatSummary {
+  legId: string
+  title: string
+  memberCount: number
+  unreadCount: number
+  lastMessage?: ChatMessage
+}
+
+/** Private setup progress; never an approval or a published driver offer. */
+export interface DriverOnboardingDraft {
+  step: 1 | 2 | 3 | 4
+  vehicle: DriverSetupInput['vehicle']
+  commute: {
+    origin: string; destination: string
+    originPlace?: Place; destinationPlace?: Place
+    offerReturn: boolean; departure: string; returnTime: string
+    days: Weekday[]; maxDeviationMin: number
+  }
+  seatsOpen: number
+  monthlyContribution: number
+}
+
+export interface DriverDocument {
+  id?: string
+  kind: DocKind
+  status: 'pending' | 'verified' | 'rejected'
+  expiresOn?: string
+  reviewNote?: string
 }
 
 export interface PendingDocument {
@@ -97,6 +131,7 @@ export interface PendingDocument {
   storagePath: string
   detail?: string
   createdAt: number
+  expiresOn?: string
 }
 
 export interface SafetyReport {
@@ -118,7 +153,8 @@ export interface AccountSnapshot {
   preferences: { locationConsent: boolean; lowData: boolean; emergencyContact: string }
   commutes: CommutePlan[]
   driverSetup?: DriverSetupInput
-  documents: { kind: DocKind; status: 'pending' | 'verified' | 'rejected' }[]
+  documents: DriverDocument[]
+  driverDraft?: DriverOnboardingDraft
   verification: PublicVerification
   exceptions: ScheduleException[]
   pendingRequests: JoinRequest[]
@@ -185,8 +221,12 @@ export interface LiftyApi {
   savePassengerCommute(plan: CommutePlan): Promise<string>
   saveDriverSetup(setup: DriverSetupInput): Promise<void>
   saveDriverSettings(legId: string, input: { seats: number; maxDeviationMin: number; monthlyContribution: number; departureTime?: string; days?: Weekday[] }): Promise<void>
+  setDriverRequestsPaused(legId: string, paused: boolean): Promise<void>
+  saveDriverOnboardingDraft(draft: DriverOnboardingDraft): Promise<void>
+  getDriverOnboardingDraft(): Promise<DriverOnboardingDraft | null>
+  clearDriverOnboardingDraft(): Promise<void>
   uploadPhoto(kind: 'avatar' | 'vehicle', file: File): Promise<string>
-  uploadDocument(kind: DocKind, file: File, detail?: string): Promise<void>
+  uploadDocument(kind: DocKind, file: File, detail?: string, expiresOn?: string): Promise<void>
   setConsent(input: { location?: boolean; terms?: boolean; emergencyContact?: string; lowData?: boolean }): Promise<void>
   listPickupPoints(near?: LatLng): Promise<Place[]>
   // matching
@@ -217,8 +257,10 @@ export interface LiftyApi {
   // tracking
   getCurrentInstance(): Promise<CommuteInstance | null>
   // messaging + notifications
-  listMessages(clubId: string, before?: number): Promise<ChatMessage[]>
-  sendMessage(clubId: string, body: string): Promise<void>
+  listMessages(clubId: string, before?: number, beforeSequence?: number): Promise<ChatMessage[]>
+  sendMessage(clubId: string, body: string, messageId?: string): Promise<void>
+  markClubRead(clubId: string, messageId?: string): Promise<void>
+  listChatSummaries(): Promise<ChatSummary[]>
   subscribeMessages(clubId: string, onMessage: (m: ChatMessage) => void): () => void
   listNotifications(): Promise<AppNotification[]>
   markNotificationsRead(): Promise<void>

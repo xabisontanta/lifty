@@ -68,7 +68,7 @@ test('a permanent demo flag left by an older build is removed — the app asks t
 test('a stale per-tab demo choice is ignored and removed before real sign-in', async ({ page }) => {
   const backend = await fakeBackend(page)
   await page.addInitScript(() => { sessionStorage.setItem('lifty.source', 'demo') })
-  await page.goto('/signin')
+  await page.goto('/signin', { waitUntil: 'domcontentloaded' })
   await expect(page.getByText('Demo mode is on')).toHaveCount(0)
   await expect(page.getByRole('button',{name:'Use real accounts'})).toHaveCount(0)
   expect(await page.evaluate(() => sessionStorage.getItem('lifty.source'))).toBeNull()

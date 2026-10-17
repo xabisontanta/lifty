@@ -11,11 +11,11 @@ export interface TrackingFeed {
   /** Explicit pickup actions — we never rely on GPS inference alone. */
   selectRider?(passengerId: string): void
   setConsent?(consent: boolean): void
-  markDriverArrived(): void
-  markPassengerAtPickup(): void
-  markCollected(): void
+  markDriverArrived(passengerId?: string): Promise<void>
+  markPassengerAtPickup(): Promise<void>
+  markCollected(passengerId?: string): Promise<void>
   /** driver only, after the 3-minute grace period */
-  markNoShow(): void
+  markNoShow(passengerId?: string): Promise<void>
   endSharing(): void | Promise<boolean>
   /** dev: stop emitting updates so stale-location UX can be exercised */
   setLinkDown(down: boolean): void

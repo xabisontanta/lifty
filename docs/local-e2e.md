@@ -68,6 +68,10 @@ For a shorter real-backend acceptance check, run `npm run test:e2e:local -- test
 
 The suite can be run repeatedly: each file removes the accounts earlier runs left on the three reserved fake numbers and gives back the seats their memberships held (a plain `delete from auth.users` does not restore a driver's seat counter, and fixture drivers would vanish from results run after run). If a fixture driver is missing from results anyway, rebuild the sandbox from scratch with `npm run stack:down` then `npm run stack:up`.
 
+Cleanup captures reserved memberships, removes those accounts, and restores their seat counts in one transaction. Restoring capacity before removing two memberships would violate vehicle capacity checks. The two-passenger driver journey is `npm run test:e2e:local -- tests/e2e-local/driver-pilot.spec.ts`; it uses normal local OTP, real road matching, manual driver acceptance, group chat, pause/reopen and individual pickup/completion actions. Only fixture trip timing is set through the guarded operator API.
+
+Driver-specific rollback checks are `npm run test:driver-pilot` and `npm run test:driver-holds`. `npm run test:chat-race` verifies actual two-client message ordering and retry deduplication, then removes only its generated fixture accounts. See [driver review instructions](driver-pilot-review.md) for the local preview and remaining real-device release gates.
+
 The sandbox raises Auth's hourly SMS cap (`sms_sent`) because one full run requests about 20 codes; the per-number gap between codes is unchanged and is what the "second code straight away" test exercises.
 
 Isolation, lifecycle and safety assertions are rollback-only. The safety suite verifies cleanup preserves an unrelated account, seed modes stay unchanged, and fixture notifications cannot be dispatched as real push. Coverage checks use temporary searches and roll back. The original pilot database suite and concurrency check require a local URL:

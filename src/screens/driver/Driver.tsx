@@ -1,13 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Outlet, useNavigate, useParams } from 'react-router-dom'
 import { DestinationMarker, MapView, PickupMarker, RouteLine } from '@/components/map/MapView'
 import { MatchMap } from '@/components/match/MatchMap'
 import { KV, MetricTile, PassengerCard, PaymentBadge, ScheduleCard } from '@/components/match/cards'
-import { CallButton, VehiclePhotoCard } from '@/components/ui/extras'
+import { VehiclePhotoCard } from '@/components/ui/extras'
 import { Icon } from '@/components/ui/Icon'
 import {
   Avatar, Banner, BottomNavigation, BottomSheet, Card, CardSkeleton, EmptyState, ErrorState, LiftyButton, ProfileRow, Rating, Screen, ScreenBody, ScreenFooter,
-  ScreenHeader, SecondaryButton, SectionTitle, StatusBadge, TextButton, Toggle, VerificationBadge, IconButton, useToast, TextField,
+  ScreenHeader, SecondaryButton, SectionTitle, StatusBadge, TextButton, VerificationBadge, IconButton, useToast,
 } from '@/components/ui/kit'
 import { formatDays, greeting, rand } from '@/lib/format'
 import { nextCommute } from '@/lib/club'
@@ -15,13 +15,19 @@ import { useAsync } from '@/hooks/useAsync'
 import { useDriverLegs } from '@/hooks/useClubs'
 import { api, ApiError } from '@/services/api'
 import { useApp } from '@/store/app'
-import { shareCommute } from '@/services/share'
+import { DriverRequestsProvider, refreshDriverRequests, useDriverRequests } from './useDriverRequests'
+import { nextDriverCommute, requestStatusLabel } from './driverJourney'
+import { useClubChats } from '@/hooks/useClubChats'
 
 const isOffline = (e: Error | null) => e instanceof ApiError && e.code === 'offline'
 
 export function DriverTabs() {
-  const { state } = useApp()
-  const { data } = useAsync(() => api.listIncomingRequests(), [state.driver.members.length])
+  return <DriverRequestsProvider><DriverTabShell /></DriverRequestsProvider>
+}
+
+function DriverTabShell() {
+  const { data } = useDriverRequests()
+  const chats = useClubChats()
   const pending = data?.filter((r) => r.status === 'pending').length ?? 0
   return (
     <Screen>
@@ -31,7 +37,7 @@ export function DriverTabs() {
           { to: '/d/home', label: 'Home', icon: 'home' },
           { to: '/d/route', label: 'My Route', icon: 'route' },
           { to: '/d/requests', label: 'Requests', icon: 'users', badge: pending || undefined },
-          { to: '/d/inbox', label: 'Messages', icon: 'inbox' },
+          { to: '/d/inbox', label: 'Messages', icon: 'inbox', badge: chats.totalUnread || undefined },
           { to: '/d/profile', label: 'Profile', icon: 'user' },
         ]}
       />
@@ -44,13 +50,23 @@ export function DriverHome() {
   const nav = useNavigate()
   const { state } = useApp()
   const { user, driver } = state
-  const { legs } = useDriverLegs()
-  const morning = legs.find((l) => l.direction === 'to_work') ?? legs[0]
-  const members = morning?.members ?? []
-  const next = morning ? nextCommute(morning.days, morning.departureTime, state.exceptions) : null
-  const { data: reqs } = useAsync(() => api.listIncomingRequests(), [members.length])
+  const { legs, loading: legsLoading, error: legsError, retry: retryLegs } = useDriverLegs()
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => { const timer = setInterval(() => setNow(new Date()), 30_000); return () => clearInterval(timer) }, [])
+  const active = useAsync(() => api.getCurrentInstance(), [state.user?.id, Math.floor(now.getTime() / 60_000)])
+  useEffect(() => {
+    const catchUp = () => { active.retry(); retryLegs() }
+    window.addEventListener('focus', catchUp)
+    window.addEventListener('online', catchUp)
+    return () => { window.removeEventListener('focus', catchUp); window.removeEventListener('online', catchUp) }
+  }, [active.retry, retryLegs])
+  const upcoming = nextDriverCommute(legs, state.exceptions, now)
+  const leg = legs.find(l => l.legId === active.data?.legId) ?? upcoming?.leg ?? legs[0]
+  const members = leg?.members ?? []
+  const next = leg ? nextCommute(leg.days, leg.departureTime, state.exceptions, false, { legId: leg.legId, now }) : null
+  const { data: reqs, error: requestsError, retry: retryRequests } = useDriverRequests()
   const pending = reqs?.filter((r) => r.status === 'pending') ?? []
-  const income = legs.reduce((sum, l) => sum + l.members.length * l.monthlyContribution, 0)
+  const income = legs.reduce((sum, l) => sum + l.members.reduce((amount, member) => amount + (member.monthlyContribution ?? 0), 0), 0)
   const verified = Object.values(state.verification).every(v=>v==='verified')
   return (
     <ScreenBody>
@@ -62,22 +78,25 @@ export function DriverHome() {
         <IconButton icon="bell" label="Requests and updates" onClick={() => nav('/d/inbox')} />
       </div>
 
-      {!verified && <div style={{ marginBottom: 12 }}><Banner tone="warning" icon="clock" action={<TextButton onClick={() => nav('/onboarding/driver/3')}>Finish</TextButton>}><strong>Verification in progress</strong>Your latest ID, licence, registration and insurance must be approved before new passengers can match with you.</Banner></div>}
+      {!verified && <div style={{ marginBottom: 12 }}><Banner tone="warning" icon="clock" action={<TextButton onClick={() => nav('/d/verification')}>Review</TextButton>}><strong>{Object.values(state.verification).some(v => v === 'expired') ? 'Verification expired' : 'Verification in progress'}</strong>Your latest ID, licence, registration and insurance must be approved before new passengers can match with you.</Banner></div>}
 
-      <Card className="navy" as="section">
-        <div className="row-flex between"><span className="eyebrow" style={{ color: 'rgba(255,255,255,.7)' }}>Today’s commute</span><StatusBadge tone="success">{members.length} passenger{members.length === 1 ? '' : 's'}</StatusBadge></div>
-        <h2 className="h3" style={{ margin: '8px 0 2px' }}>{(morning?.originLabel ?? driver.commute.origin).split(',')[0]} → {(morning?.destinationLabel ?? driver.commute.destination).split(',')[0]}</h2>
-        <p style={{ color: 'rgba(255,255,255,.75)' }}>{next ? next.label : 'No upcoming commute'}{morning ? ` · ${formatDays(morning.days)}` : ''}</p>
+      {legsLoading ? <CardSkeleton /> : legsError ? <ErrorState message={legsError.message} onRetry={retryLegs} /> : <Card className="navy" as="section">
+        <div className="row-flex between"><span className="eyebrow" style={{ color: 'rgba(255,255,255,.7)' }}>{active.data ? 'Today’s departure' : 'Next commute'}{leg ? ` · ${leg.direction === 'to_home' ? 'Evening' : 'Morning'}` : ''}</span><StatusBadge tone="success">{members.length} passenger{members.length === 1 ? '' : 's'}</StatusBadge></div>
+        <h2 className="h3" style={{ margin: '8px 0 2px' }}>{(leg?.originLabel ?? driver.commute.origin).split(',')[0]} → {(leg?.destinationLabel ?? driver.commute.destination).split(',')[0]}</h2>
+        <p style={{ color: 'rgba(255,255,255,.75)' }}>{active.data ? new Date(active.data.departsAt).toLocaleString('en-ZA', { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Johannesburg' }) : next ? next.label : 'No upcoming commute'}{leg ? ` · ${formatDays(leg.days)}` : ''}</p>
         <div style={{ marginTop: 14 }}>
-          <button className="btn btn-primary btn-block" onClick={() => nav('/d/today')} disabled={members.length === 0}><Icon name="navigation" size={20} /> Open today’s commute</button>
+          <button className="btn btn-primary btn-block" onClick={() => nav('/d/today')} disabled={!active.data || active.loading}><Icon name="navigation" size={20} /> Open today’s commute</button>
         </div>
-      </Card>
+      </Card>}
+      {active.error && <Banner tone="warning" action={<TextButton onClick={active.retry}>Retry</TextButton>}>Today's departure could not be loaded. Your saved route is shown above.</Banner>}
+      {leg?.requestsPaused && <Banner tone="info" action={<TextButton onClick={() => nav('/d/settings')}>Manage</TextButton>}>New requests are paused for this leg. Existing arrangements continue.</Banner>}
 
       <div className="metrics" style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
-        <MetricTile icon="seat" label="Seats open" value={morning?.seatsOpen ?? driver.seatsOpen} tone="teal" />
+        <MetricTile icon="seat" label="Seats open" value={leg?.seatsOpen ?? driver.seatsOpen} tone="teal" />
         <MetricTile icon="users" label="Requests" value={pending.length} tone="amber" />
-        <MetricTile icon="wallet" label="Monthly" value={rand(income)} tone="blue" />
+        <MetricTile icon="wallet" label="Agreed monthly" value={rand(income)} tone="blue" />
       </div>
+      {requestsError && <Banner tone="warning" action={<TextButton onClick={retryRequests}>Retry</TextButton>}>Requests could not be refreshed. Check again before making a decision.</Banner>}
 
       {pending.length > 0 && (
         <>
@@ -88,8 +107,8 @@ export function DriverHome() {
       <SectionTitle>Manage</SectionTitle>
       <div className="list">
         <ProfileRow icon="calendar" title="Not driving?" subtitle="Tell your passengers in one tap" onClick={() => nav('/d/exceptions')} />
-        <ProfileRow icon="seat" title="Seat availability" subtitle={`${morning?.seatsOpen ?? driver.seatsOpen} of ${driver.vehicle.seats} seats open`} onClick={() => nav('/d/seats')} />
-        <ProfileRow icon="wallet" title="Contributions" subtitle="Who has paid this month" onClick={() => nav('/d/contributions')} />
+        <ProfileRow icon="seat" title="Seat availability" subtitle={`${leg?.seatsOpen ?? driver.seatsOpen} of ${driver.vehicle.seats} seats open`} onClick={() => nav('/d/seats')} />
+        <ProfileRow icon="wallet" title="Contributions" subtitle="Due, reported and confirmed receipts" onClick={() => nav('/d/contributions')} />
         <ProfileRow icon="shield" title="Safety Centre" onClick={() => nav('/safety')} />
       </div>
     </ScreenBody>
@@ -100,11 +119,14 @@ export function DriverHome() {
 export function MyRoute() {
   const nav = useNavigate()
   const toast = useToast()
-  const { state, updateDriver } = useApp()
+  const { state } = useApp()
   const d = state.driver
   const { legs, loading, error, retry } = useDriverLegs()
   const [legIdx, setLegIdx] = useState(0)
   const [sel, setSel] = useState<string | null>(null)
+  const [confirmRemoval, setConfirmRemoval] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const removingRef = useRef(false)
   const leg = legs[legIdx]
   const member = leg?.members.find((m) => m.id === sel)
   if (loading) return <ScreenBody><div className="title-block"><h1>My Route</h1></div><CardSkeleton /></ScreenBody>
@@ -126,7 +148,7 @@ export function MyRoute() {
         </MapView>
       </div>
       <div style={{ marginTop: 12 }}>
-        <ScheduleCard days={leg.days} pickupTime={`Depart ${leg.departureTime}`} pickup={leg.originLabel} destination={leg.destinationLabel} nextLabel={nextCommute(leg.days, leg.departureTime, state.exceptions)?.label} />
+        <ScheduleCard days={leg.days} pickupTime={`Depart ${leg.departureTime}`} pickup={leg.originLabel} destination={leg.destinationLabel} nextLabel={nextCommute(leg.days, leg.departureTime, state.exceptions, false, { legId: leg.legId })?.label} />
       </div>
       <div className="list" style={{ marginTop: 12 }}>
         <ProfileRow icon="gauge" title="Maximum detour" subtitle={`${leg.maxDeviationMin} min`} onClick={() => nav('/d/settings')} />
@@ -140,7 +162,7 @@ export function MyRoute() {
       ) : (
         <div className="list">
           {leg.members.map((m) => (
-            <button key={m.id} className="row" onClick={() => setSel(m.id)}>
+            <button key={m.id} className="row" onClick={() => { setSel(m.id); setConfirmRemoval(false) }}>
               <Avatar first={m.firstName} last={m.lastInitial} hue={m.avatarHue} size={40} src={m.avatarUrl} />
               <span className="row-text"><span className="row-title">{m.firstName} {m.lastInitial}.</span><span className="row-sub">{m.pickupLabel} · {m.pickupTime}</span></span>
               <PaymentBadge status={m.paymentStatus} />
@@ -148,20 +170,25 @@ export function MyRoute() {
           ))}
         </div>
       )}
-      <BottomSheet open={!!member} onClose={() => setSel(null)} title={member ? `${member.firstName} ${member.lastInitial}.` : ''}>
+      <BottomSheet open={!!member} onClose={() => { if (!removing) setSel(null) }} title={member ? `${member.firstName} ${member.lastInitial}.` : ''}>
         <div className="stack-3">
           <SecondaryButton icon="message" onClick={() => nav(`/chat/${leg.legId}`, { state: { name: 'Lift club' } })}>Message lift club</SecondaryButton>
-          <SecondaryButton icon="calendar" onClick={() => nav('/d/exceptions')}>Passenger absent today</SecondaryButton>
-          <SecondaryButton tone="danger" icon="trash" onClick={async () => {
-            if (!member) return
+          <SecondaryButton icon="calendar" onClick={() => nav('/d/exceptions')}>Manage my driving availability</SecondaryButton>
+          {confirmRemoval && <Banner tone="warning">End {member?.firstName}'s arrangement on this leg? They will be notified and future departures will be updated. This does not record an absence.</Banner>}
+          <SecondaryButton tone="danger" icon="trash" loading={removing} onClick={async () => {
+            if (!member || removingRef.current) return
+            if (!confirmRemoval) { setConfirmRemoval(true); return }
+            removingRef.current = true
+            setRemoving(true)
             try {
               await api.removeMember(leg.legId, member.id)
-              updateDriver({ members: d.members.filter((m) => m.id !== member.id), seatsOpen: Math.min(d.vehicle.seats, d.seatsOpen + 1) })
               setSel(null)
               retry()
+              refreshDriverRequests()
               toast(`${member.firstName} removed from your lift club`)
             } catch (e) { toast(e instanceof Error ? e.message : 'Could not remove', 'error') }
-          }}>Remove from lift club</SecondaryButton>
+            finally { removingRef.current = false; setRemoving(false) }
+          }}>{confirmRemoval ? 'Confirm removal' : 'Remove from lift club'}</SecondaryButton>
         </div>
       </BottomSheet>
     </ScreenBody>
@@ -171,17 +198,17 @@ export function MyRoute() {
 /* ---------- Incoming requests ---------- */
 export function Requests() {
   const nav = useNavigate()
-  const { state } = useApp()
-  const { data, loading, error, retry } = useAsync(() => api.listIncomingRequests(), [state.driver.members.length])
+  const { data, loading, refreshing, error, retry } = useDriverRequests()
   const pending = data?.filter((r) => r.status === 'pending') ?? []
   const done = data?.filter((r) => r.status !== 'pending') ?? []
   return (
     <ScreenBody>
-      <div className="title-block"><h1>Requests</h1><p>Passengers who’d like to join your lift club.</p></div>
-      {loading ? <div className="stack-3"><CardSkeleton /><CardSkeleton /></div> : error ? <ErrorState message={error.message} offline={isOffline(error)} onRetry={retry} /> : (
+      <div className="title-block"><h1>Requests</h1><p>Passengers who’d like to join your lift club.</p><TextButton disabled={refreshing} onClick={retry}>{refreshing ? 'Refreshing…' : 'Refresh requests'}</TextButton></div>
+      {error && data && <Banner tone="warning" action={<TextButton onClick={retry}>Retry</TextButton>}>Requests could not be refreshed. These are the last saved results.</Banner>}
+      {loading && !data ? <div className="stack-3"><CardSkeleton /><CardSkeleton /></div> : error && !data ? <ErrorState message={error.message} offline={isOffline(error)} onRetry={retry} /> : (
         <>
           {pending.length === 0 ? <EmptyState icon="users" title="No pending requests" body="When a passenger on a compatible route asks to join, you’ll see exactly how it affects your commute." /> : <div className="stack-3">{pending.map((r) => <PassengerCard key={r.id} req={r} onClick={() => nav(`/d/request/${r.id}`)} />)}</div>}
-          {done.length > 0 && (<><SectionTitle>Earlier</SectionTitle><div className="list">{done.map((r) => <ProfileRow key={r.id} title={`${r.passenger.firstName} ${r.passenger.lastInitial}.`} subtitle={r.pickup.label} right={<StatusBadge tone={r.status === 'accepted' ? 'success' : 'neutral'}>{r.status === 'accepted' ? 'Accepted' : 'Declined'}</StatusBadge>} />)}</div></>)}
+          {done.length > 0 && (<><SectionTitle>Earlier</SectionTitle><div className="list">{done.map((r) => <ProfileRow key={r.id} title={`${r.passenger.firstName} ${r.passenger.lastInitial}.`} subtitle={r.pickup.label} onClick={() => nav(`/d/request/${r.id}`)} right={<StatusBadge tone={r.status === 'accepted' ? 'success' : 'neutral'}>{requestStatusLabel(r.status)}</StatusBadge>} />)}</div></>)}
         </>
       )}
     </ScreenBody>
@@ -193,27 +220,32 @@ export function RequestDetail() {
   const nav = useNavigate()
   const toast = useToast()
   const { id = '' } = useParams()
-  const { state, updateDriver } = useApp()
-  const { data, loading, error, retry } = useAsync(async () => (await api.listIncomingRequests()).find((r) => r.id === id) ?? Promise.reject(new ApiError('We couldn’t find that request.', 'not-found')), [id])
+  const { state } = useApp()
+  const inbox = useDriverRequests()
+  const data = inbox.data?.find(r => r.id === id)
+  const { loading, error, retry } = inbox
+  const decisionInFlight = useRef(false)
   const [busy, setBusy] = useState<'accept' | 'decline' | null>(null)
+  const [decisionError, setDecisionError] = useState<string | null>(null)
   const [declineSheet, setDeclineSheet] = useState(false)
 
   const respond = async (decision: 'accept' | 'decline') => {
-    if (!data) return
+    if (!data || data.status !== 'pending' || decisionInFlight.current) return
+    decisionInFlight.current = true
     setBusy(decision)
+    setDecisionError(null)
     try {
       await api.respondToRequest(data.id, decision)
       if (decision === 'accept') {
-        updateDriver({
-          members: [...state.driver.members, { id: data.passenger.id, firstName: data.passenger.firstName, lastInitial: data.passenger.lastInitial, avatarHue: data.passenger.avatarHue, role: 'passenger', paymentStatus: 'upcoming' }],
-          seatsOpen: Math.max(0, state.driver.seatsOpen - 1),
-        })
         toast(`${data.passenger.firstName} is now in your lift club`, 'success')
       } else toast('Request declined — we’ll let them know kindly')
+      refreshDriverRequests()
       nav('/d/requests', { replace: true })
     } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not respond', 'error')
+      setDecisionError(e instanceof Error ? e.message : 'Could not respond. Check the request status before retrying.')
+      retry()
     } finally {
+      decisionInFlight.current = false
       setBusy(null)
       setDeclineSheet(false)
     }
@@ -225,8 +257,12 @@ export function RequestDetail() {
     <Screen>
       <ScreenHeader title="Passenger request" onBack={() => nav(-1)} />
       <ScreenBody className="flush">
-        {loading ? <div style={{ padding: 16 }}><CardSkeleton /></div> : error || !data || !p ? <ErrorState message={error?.message ?? 'Not found'} offline={isOffline(error)} onRetry={retry} /> : (
+        {loading && !data ? <div style={{ padding: 16 }}><CardSkeleton /></div> : !data || !p ? <ErrorState message={error?.message ?? 'This request is no longer available.'} offline={isOffline(error)} onRetry={retry} /> : (
           <div style={{ padding: '0 16px' }}>
+            {decisionError && <Banner tone="error">{decisionError}</Banner>}
+            {error && <Banner tone="warning" action={<TextButton onClick={retry}>Retry</TextButton>}>The latest request status could not be checked.</Banner>}
+            {data.status !== 'pending' && <Banner tone={data.status === 'accepted' ? 'success' : 'info'}>Request status: {requestStatusLabel(data.status)}. No further decision is needed.</Banner>}
+            {data.direction && <p className="small muted">{data.direction === 'to_home' ? 'Evening · home' : 'Morning · work'}</p>}
             <div className="map-frame">
               <MatchMap geometry={data.geometry} pickup={data.pickup.location} destination={data.destination.location} pickupLabel={data.pickup.label} passengerLabel={p.firstName} passenger={data.geometry.walking[0]} height={280} deviationText={`+${data.deviationMinutes} min`} focus="pickup" inset padding={{ top: 56, right: 40, bottom: 56, left: 40 }} />
             </div>
@@ -279,14 +315,14 @@ export function RequestDetail() {
       </ScreenBody>
       {data && data.status === 'pending' && (
         <ScreenFooter>
-          <LiftyButton loading={busy === 'accept'} disabled={!!busy} onClick={() => respond('accept')}>Accept Passenger</LiftyButton>
-          <SecondaryButton disabled={!!busy} onClick={() => setDeclineSheet(true)}>Decline</SecondaryButton>
+          <LiftyButton loading={busy === 'accept'} disabled={!!busy || !!error} onClick={() => respond('accept')}>Accept Passenger</LiftyButton>
+          <SecondaryButton disabled={!!busy || !!error} onClick={() => setDeclineSheet(true)}>Decline</SecondaryButton>
         </ScreenFooter>
       )}
       <BottomSheet open={declineSheet} onClose={() => setDeclineSheet(false)} title="Decline this request?">
         <div className="stack-3">
           <p className="muted">{p?.firstName} will be told the arrangement isn’t a fit — no reason shown. They can keep searching.</p>
-          <LiftyButton loading={busy === 'decline'} onClick={() => respond('decline')}>Yes, decline</LiftyButton>
+          <LiftyButton loading={busy === 'decline'} disabled={!!busy || !!error || data?.status !== 'pending'} onClick={() => respond('decline')}>Yes, decline</LiftyButton>
           <SecondaryButton onClick={() => setDeclineSheet(false)}>Keep reviewing</SecondaryButton>
         </div>
       </BottomSheet>
@@ -366,18 +402,20 @@ export function DriverProfile() {
   const u = state.user
   const v = state.driver.vehicle
   const allDocs = Object.values(state.verification).every(v=>v==='verified')
+  const expiredDocs = Object.values(state.verification).some(v=>v==='expired')
   return (
     <ScreenBody>
       <div className="title-block"><h1>Profile</h1></div>
       <Card>
         <div className="row-flex">
           <Avatar first={u?.firstName ?? 'D'} last={u?.lastInitial} hue={u?.avatarHue ?? 24} size={64} src={state.avatarUrl} />
-          <div className="grow"><h2 className="h3">{u?.fullName ?? 'Your name'}</h2><p className="small muted">{state.phone}</p><div className="row-flex wrap"><StatusBadge tone="teal" icon="car">Driver</StatusBadge>{u?.isTest && <StatusBadge tone="warning">Test driver</StatusBadge>}<VerificationBadge status={allDocs ? 'verified' : 'pending'} label="Verified Driver" /></div></div>
+          <div className="grow"><h2 className="h3">{u?.fullName ?? 'Your name'}</h2><p className="small muted">{state.phone}</p><div className="row-flex wrap"><StatusBadge tone="teal" icon="car">Driver</StatusBadge>{u?.isTest && <StatusBadge tone="warning">Test driver</StatusBadge>}<VerificationBadge status={allDocs ? 'verified' : expiredDocs ? 'expired' : 'pending'} label="Verified Driver" /></div></div>
         </div>
       </Card>
       <div style={{ marginTop: 12 }}><VehiclePhotoCard vehicle={{ make: v.make, model: v.model, colour: v.colour, year: Number(v.year), registrationSummary: v.registration.replace(/^(\w{2}).*?(\d{3})$/, '$1 ••• $2'), seatsTotal: v.seats, bodyType: v.bodyType, photoUrl: v.photoUrl }} /></div>
       <SectionTitle>Driving</SectionTitle>
       <div className="list">
+        <ProfileRow icon="shield" title="Verification documents" subtitle="Review status, expiry dates and replacements" onClick={() => nav('/d/verification')} />
         <ProfileRow icon="star" title="Ratings & reviews" onClick={() => nav('/d/ratings')} />
         <ProfileRow icon="wallet" title="Contributions" onClick={() => nav('/d/contributions')} />
         <ProfileRow icon="seat" title="Seat availability" onClick={() => nav('/d/seats')} />
