@@ -2,7 +2,7 @@ import { Component, useEffect, useId, useRef, useState, type ReactNode } from 'r
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import type { LatLng, Place, Vehicle } from '@/domain/types'
-import { vehicleImage } from '@/data/mock'
+import { VehicleVisual } from './VehicleVisual'
 import { env, hasMapbox } from '@/lib/env'
 import { reversePlace, searchPlaces, type PlaceSuggestion } from '@/services/mapbox'
 import { getCurrentPosition } from '@/services/location'
@@ -234,16 +234,16 @@ export function NavigateButton({ destination, waypoint, mode = 'driving', label 
 
 /* ---------- Vehicle photo card (design 19) ---------- */
 
-export function VehiclePhotoCard({ vehicle, seatsAvailable, compact }: { vehicle: Vehicle; seatsAvailable?: number; compact?: boolean }) {
+export function VehiclePhotoCard({ vehicle, seatsAvailable, compact, generateIllustration = false }: { vehicle: Vehicle; seatsAvailable?: number; compact?: boolean; generateIllustration?: boolean }) {
   const isOwnPhoto = !!vehicle.photoUrl
   return (
     <div className={`vehicle-card ${compact ? 'compact' : ''}`}>
-      <img src={vehicleImage(vehicle)} alt={`${vehicle.colour} ${vehicle.make} ${vehicle.model}`} loading="lazy" />
+      <VehicleVisual vehicle={vehicle} generate={generateIllustration} />
       <div className="grow">
         <strong>{vehicle.make} {vehicle.model}</strong>
         <p className="small muted">{vehicle.colour}{vehicle.year ? ` · ${vehicle.year}` : ''}</p>
         <p className="small muted">{vehicle.registrationSummary}{seatsAvailable != null ? ` · ${seatsAvailable} seat${seatsAvailable === 1 ? '' : 's'} available` : ''}</p>
-        {!isOwnPhoto && !compact && <p className="tiny muted">Illustrative photo — check the plate and colour at pickup.</p>}
+        {!isOwnPhoto && !compact && <p className="tiny muted">Model illustrations may vary. Check the plate, colour and driver at pickup.</p>}
       </div>
     </div>
   )

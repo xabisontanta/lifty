@@ -244,6 +244,7 @@ export type Database = {
                     "monthly_contribution": number;
                     "origin": unknown;
                     "origin_label": string;
+                    "pickup_policy": string;
                     "requests_paused": boolean;
                     "route": unknown;
                     "route_distance_m": number;
@@ -267,6 +268,7 @@ export type Database = {
                     "monthly_contribution": number;
                     "origin": unknown;
                     "origin_label": string;
+                    "pickup_policy"?: string;
                     "requests_paused"?: boolean;
                     "route": unknown;
                     "route_distance_m": number;
@@ -288,6 +290,7 @@ export type Database = {
                     "monthly_contribution"?: number;
                     "origin"?: unknown;
                     "origin_label"?: string;
+                    "pickup_policy"?: string;
                     "requests_paused"?: boolean;
                     "route"?: unknown;
                     "route_distance_m"?: number;
@@ -1528,6 +1531,15 @@ export type Database = {
                 };
                 Returns: Json[];
             };
+            "claim_vehicle_illustration": {
+                Args: {
+                    "p_generate"?: boolean;
+                    "p_provider_enabled"?: boolean;
+                    "p_user": string;
+                    "p_vehicle": Json;
+                };
+                Returns: Json;
+            };
             "clear_driver_onboarding_draft": {
                 Args: Record<PropertyKey, never>;
                 Returns: undefined;
@@ -1619,6 +1631,14 @@ export type Database = {
                     "p_lease": string;
                 };
                 Returns: undefined;
+            };
+            "finish_vehicle_illustration": {
+                Args: {
+                    "p_key": string;
+                    "p_lease": string;
+                    "p_storage_path"?: string;
+                };
+                Returns: boolean;
             };
             "generate_commute_instances": {
                 Args: {
@@ -1928,9 +1948,16 @@ export type Database = {
                     "p_departure"?: string;
                     "p_deviation": number;
                     "p_leg": string;
+                    "p_pickup_policy"?: string;
                     "p_seats": number;
                 };
                 Returns: undefined;
+            };
+            "save_driver_vehicle": {
+                Args: {
+                    "p_vehicle": Json;
+                };
+                Returns: string;
             };
             "send_club_message": {
                 Args: {
@@ -1980,6 +2007,12 @@ export type Database = {
                 Args: Record<PropertyKey, never>;
                 Returns: boolean;
             };
+            "update_profile_name": {
+                Args: {
+                    "p_full_name": string;
+                };
+                Returns: Json;
+            };
             "upsert_driver_leg": {
                 Args: {
                     "p_contribution": number;
@@ -1995,6 +2028,7 @@ export type Database = {
                     "p_origin_label": string;
                     "p_origin_lat": number;
                     "p_origin_lng": number;
+                    "p_pickup_policy"?: string;
                     "p_route": Json;
                     "p_seats": number;
                 };

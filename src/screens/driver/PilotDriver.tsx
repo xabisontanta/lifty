@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react'
 import {useNavigate} from 'react-router-dom'
-import {api,type CommuteInstance} from '@/services/api'
+import {api,type CommuteInstance,type DriverPickupPolicy} from '@/services/api'
+import {DRIVER_PICKUP_OPTIONS} from '@/screens/auth/Onboarding'
 import {useAsync} from '@/hooks/useAsync'
 import {useTracking} from '@/hooks/useTracking'
 import {useDriverLegs} from '@/hooks/useClubs'
@@ -17,9 +18,10 @@ export function DriverControls({seatsOnly=false}:{seatsOnly?:boolean}){
  const nav=useNavigate(),toast=useToast(),{state,update}=useApp(),q=useDriverLegs()
  const [selectedLeg,setSelectedLeg]=useState(''),leg=q.legs.find(l=>l.legId===selectedLeg)??q.legs[0]
  const [seats,setSeats]=useState(''),[deviation,setDeviation]=useState(''),[amount,setAmount]=useState(''),[busy,setBusy]=useState(false)
+ const [pickupPolicy,setPickupPolicy]=useState<DriverPickupPolicy>('flexible')
  const [pauseBusy,setPauseBusy]=useState(false),[saveError,setSaveError]=useState<string|null>(null)
  const settingsInFlight=useRef(false),pauseInFlight=useRef(false)
- useEffect(()=>{if(leg){setSeats(String(leg.seatsOpen+leg.members.length));setDeviation(String(leg.maxDeviationMin));setAmount(String(leg.monthlyContribution))}},[leg])
+ useEffect(()=>{if(leg){setSeats(String(leg.seatsOpen+leg.members.length));setDeviation(String(leg.maxDeviationMin));setAmount(String(leg.monthlyContribution));setPickupPolicy(leg.pickupPolicy??'flexible')}},[leg])
  async function save(){
   if(!leg||settingsInFlight.current)return
   const offered=Number(seats),detour=Number(deviation),contribution=Number(amount)
@@ -27,7 +29,7 @@ export function DriverControls({seatsOnly=false}:{seatsOnly?:boolean}){
   if(!deviation.trim()||!Number.isInteger(detour)||detour<0||detour>30){setSaveError('Choose a whole number of detour minutes between 0 and 30.');return}
   if(!amount.trim()||!Number.isInteger(contribution)||contribution<0){setSaveError('Enter a monthly contribution in whole rand, zero or more.');return}
   settingsInFlight.current=true;setBusy(true);setSaveError(null)
-  try{await api.saveDriverSettings(leg.legId,{seats:offered,maxDeviationMin:detour,monthlyContribution:contribution});q.retry();toast('Driver settings published','success')}
+  try{await api.saveDriverSettings(leg.legId,{seats:offered,maxDeviationMin:detour,monthlyContribution:contribution,...(!seatsOnly?{pickupPolicy}:{})});q.retry();toast('Driver settings published','success')}
   catch(e){setSaveError(e instanceof Error?e.message:'Could not save. Your published settings have not changed.')}
   finally{settingsInFlight.current=false;setBusy(false)}
  }
@@ -44,7 +46,7 @@ export function DriverControls({seatsOnly=false}:{seatsOnly?:boolean}){
   {saveError&&<Banner tone="error">{saveError}</Banner>}
   <Select label="Commute" value={leg.legId} onChange={setSelectedLeg} options={q.legs.map(l=>({value:l.legId,label:l.direction==='to_home'?'Evening · home':'Morning · work'}))}/>
   <TextField label="Total seats offered" inputMode="numeric" value={seats} onChange={setSeats} hint={`${leg?.members.length??0} seats already taken · vehicle limit ${state.driver.vehicle.seats}`}/>
-  {!seatsOnly&&<><TextField label="Maximum detour (minutes)" inputMode="numeric" value={deviation} onChange={setDeviation}/><TextField label="Monthly contribution for new passengers (R)" inputMode="numeric" value={amount} onChange={setAmount}/><Banner tone="info">Existing passengers keep their agreed contribution. The server validates vehicle capacity and the cost-sharing cap.</Banner></>}
+  {!seatsOnly&&<><Select label="How would you like to pick passengers up?" value={pickupPolicy} onChange={value=>setPickupPolicy(value as DriverPickupPolicy)} options={DRIVER_PICKUP_OPTIONS}/><TextField label="Maximum detour (minutes)" inputMode="numeric" value={deviation} onChange={setDeviation}/><TextField label="Monthly contribution for new passengers (R)" inputMode="numeric" value={amount} onChange={setAmount}/><Banner tone="info">Your pickup preference applies to new matches. Existing passengers keep their agreed pickup and contribution. The server validates vehicle capacity and the cost-sharing cap.</Banner></>}
   <LiftyButton disabled={!leg||pauseBusy} loading={busy} onClick={()=>void save()}>Publish settings</LiftyButton>
   {!seatsOnly&&<Card><h2 className="h3">New lift requests</h2><p className="small muted">{leg.requestsPaused?'Paused for this leg. Existing passengers keep their arrangements.':'Open to compatible passengers. Pausing does not cancel any accepted trips.'}</p><SecondaryButton loading={pauseBusy} disabled={busy} onClick={()=>void pauseRequests(!leg.requestsPaused)}>{leg.requestsPaused?'Reopen new requests':'Pause new requests'}</SecondaryButton></Card>}
   {!seatsOnly&&<Card><div className="row-flex between"><span>Live location consent</span><Toggle label="Live location consent" checked={state.sharingConsent} onChange={v=>void preference({location:v})}/></div><div className="row-flex between"><span>Low-data mode</span><Toggle label="Low-data mode" checked={state.lowData} onChange={v=>void preference({lowData:v})}/></div></Card>}

@@ -1,18 +1,25 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AddressField, PhotoPicker } from '@/components/ui/extras'
+import { AddressField, PhotoPicker, VehiclePhotoCard } from '@/components/ui/extras'
 import { Avatar, Banner, DayPicker, Segmented, Select, TextField, Toggle, useToast } from '@/components/ui/kit'
 import { Icon, type IconName } from '@/components/ui/Icon'
 import { CommuteCalendar, type ScheduleValue } from '@/components/ui/CommuteCalendar'
 import { formatDays, formatDistance, isoDate, rand } from '@/lib/format'
-import { api, contributionCap, suggestedContribution, type DocKind, type DriverSetupInput } from '@/services/api'
+import { api, contributionCap, suggestedContribution, type DocKind, type DriverOnboardingDraft, type DriverPickupPolicy, type DriverSetupInput } from '@/services/api'
 import { directions } from '@/services/mapbox'
 import { hasMapbox } from '@/lib/env'
 import { isScheduleReady } from '@/domain/schedule'
-import { useApp } from '@/store/app'
+import { useApp, type DriverSetup } from '@/store/app'
 import { OnboardShell } from './Auth'
+import { suspendDriverDraftAutosave } from './DriverDraftSaver'
 
 const WALK_OPTIONS = [250, 500, 750, 1000]
+export const DRIVER_PICKUP_OPTIONS: { value: DriverPickupPolicy; label: string }[] = [
+  { value: 'flexible', label: 'Either: doorstep or a meeting point' },
+  { value: 'door_to_door', label: 'Door-to-door pickup' },
+  { value: 'meeting_point', label: 'Public meeting points only' },
+]
+const setupDraft = (driver: DriverSetup, step: DriverOnboardingDraft['step']): DriverOnboardingDraft => ({ step, vehicle: driver.vehicle, commute: driver.commute, seatsOpen: driver.seatsOpen, monthlyContribution: driver.monthlyContribution })
 
 const times = (from: number, to: number) => {
   const out: { value: string; label: string }[] = []
@@ -160,22 +167,55 @@ function PrivacyPoint({ icon, title, body }: { icon: IconName; title: string; bo
 /* 1/4 Vehicle information */
 export function DriverVehicle() {
   const nav = useNavigate()
-  const { state, updateDriver } = useApp()
+  const toast = useToast()
+  const { state, update, updateDriver } = useApp()
+  const [fullName, setFullName] = useState(state.user?.fullName ?? '')
+  const [saving, setSaving] = useState(false)
   const v = state.driver.vehicle
   const setV = (vehicle: typeof v) => updateDriver({ vehicle, seatsOpen: Math.min(state.driver.seatsOpen || vehicle.seats, vehicle.seats) })
   const set = (k: keyof typeof v) => (val: string) => setV({ ...v, [k]: k === 'seats' ? Number(val) : val })
-  const ok = v.registration.length > 3 && v.make && v.model && v.year && v.colour
+  const year = Number(v.year)
+  const validYear = /^\d{4}$/.test(v.year) && year >= 1980 && year <= new Date().getFullYear() + 1
+  const validName = fullName.trim().length >= 3 && fullName.trim().length <= 120 && fullName.trim().split(/\s+/).length >= 2
+  const ok = validName && v.registration.trim().length > 3 && !!v.make.trim() && !!v.model.trim() && validYear && !!v.colour.trim()
+  async function next() {
+    if (!ok || saving) return
+    setSaving(true)
+    suspendDriverDraftAutosave(true)
+    try {
+      const name = fullName.trim().replace(/\s+/g, ' ')
+      const verification = await api.updateProfileName(name)
+      const changedIdentityReview = verification.identity !== state.verification.identity
+      const documents = changedIdentityReview ? (await api.getAccountSnapshot())?.documents : undefined
+      const [firstName, ...surname] = name.split(' ')
+      if (state.user) update({ user: { ...state.user, fullName: name, firstName, lastInitial: surname[0]?.slice(0, 1) ?? '' }, verification, ...(documents ? { driverDocuments: documents } : {}) })
+      const vehicle = { ...v, make: v.make.trim(), model: v.model.trim(), colour: v.colour.trim() }
+      const seatsOpen = Math.min(state.driver.seatsOpen || v.seats, v.seats)
+      updateDriver({ vehicle, seatsOpen })
+      if (!state.onboarded) await api.saveDriverOnboardingDraft(setupDraft({ ...state.driver, vehicle, seatsOpen }, 2))
+      nav('/onboarding/driver/2')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save your name. Please retry.', 'error')
+    } finally {
+      setSaving(false)
+      suspendDriverDraftAutosave(false)
+    }
+  }
   return (
-    <OnboardShell step={1} total={4} title="Vehicle information" subtitle="Tell us about the car you use for your commute." onBack={() => nav(-1)} cta="Continue" disabled={!ok} onNext={() => { updateDriver({ vehicle: v, seatsOpen: Math.min(state.driver.seatsOpen || v.seats, v.seats) }); nav('/onboarding/driver/2') }}>
+    <OnboardShell step={1} total={4} title="Vehicle information" subtitle="First, your name and the car passengers will recognise." onBack={() => state.onboarded ? nav('/d/profile') : nav(-1)} cta="Continue" disabled={!ok} loading={saving} onNext={() => void next()}>
       <div className="stack-4">
+        <p className="small muted">Four simple steps: you & car, route & pickups, documents, then review.</p>
+        <TextField label="Full name" value={fullName} onChange={setFullName} autoComplete="name" maxLength={120} hint="Enter your first name and surname as shown on your identity document. Passengers see your first name and surname initial." />
         <TextField label="Registration number" value={v.registration} onChange={set('registration')} autoCapitalize="characters" hint="Passengers only see a partial plate, e.g. ND ••• 456." />
-        <div className="row-flex"><div className="grow"><TextField label="Make" value={v.make} onChange={set('make')} /></div><div className="grow"><TextField label="Model" value={v.model} onChange={set('model')} /></div></div>
-        <div className="row-flex"><div className="grow"><TextField label="Year" value={v.year} onChange={set('year')} inputMode="numeric" /></div><div className="grow"><TextField label="Colour" value={v.colour} onChange={set('colour')} /></div></div>
+        <div className="row-flex"><div className="grow"><TextField label="Make" value={v.make} onChange={set('make')} placeholder="e.g. Volkswagen" /></div><div className="grow"><TextField label="Model" value={v.model} onChange={set('model')} placeholder="e.g. Polo Vivo" /></div></div>
+        <div className="row-flex"><div className="grow"><TextField label="Year" value={v.year} onChange={set('year')} inputMode="numeric" placeholder="e.g. 2023" error={v.year && !validYear ? `Enter a model year from 1980 to ${new Date().getFullYear() + 1}.` : undefined} /></div><div className="grow"><TextField label="Colour" value={v.colour} onChange={set('colour')} placeholder="e.g. Silver" /></div></div>
         <div>
           <p className="eyebrow" style={{ marginBottom: 8 }}>Body type</p>
           <Segmented label="Body type" value={v.bodyType} onChange={(bodyType) => setV({ ...v, bodyType })} options={[{ value: 'sedan', label: 'Sedan' }, { value: 'hatchback', label: 'Hatch' }, { value: 'suv', label: 'SUV' }, { value: 'other', label: 'Other' }]} />
         </div>
-        <Select label="Available seats" value={String(v.seats)} onChange={set('seats')} options={[1, 2, 3, 4].map((n) => ({ value: String(n), label: `${n} seat${n > 1 ? 's' : ''}` }))} />
+        <Select label="Available seats" value={String(v.seats)} onChange={set('seats')} options={[1, 2, 3, 4].map((n) => ({ value: String(n), label: `${n} passenger seat${n > 1 ? 's' : ''}` }))} />
+        <p className="small muted">Count passenger seats only, excluding the driver. Vehicle and document details are checked by a human reviewer.</p>
+        {!!v.make.trim() && !!v.model.trim() && validYear && !!v.colour.trim() && <VehiclePhotoCard generateIllustration vehicle={{ make: v.make, model: v.model, year, colour: v.colour, seatsTotal: v.seats, bodyType: v.bodyType, registrationSummary: 'Your registration stays private', photoUrl: v.photoUrl }} />}
       </div>
     </OnboardShell>
   )
@@ -184,16 +224,29 @@ export function DriverVehicle() {
 /* 2/4 Your regular commute */
 export function DriverCommute() {
   const nav = useNavigate()
+  const toast = useToast()
   const { state, updateDriver } = useApp()
+  const [saving, setSaving] = useState(false)
   const c = state.driver.commute
   const set = (patch: Partial<typeof c>) => updateDriver({ commute: { ...c, ...patch } })
   // live data needs real coordinates (from the address search) to compute the route
   const ready = c.days.length > 0 && !!c.originPlace && !!c.destinationPlace
+  async function next() {
+    if (!ready || saving) return
+    setSaving(true)
+    suspendDriverDraftAutosave(true)
+    try {
+      if (!state.onboarded) await api.saveDriverOnboardingDraft(setupDraft(state.driver, 3))
+      nav('/onboarding/driver/3')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save your pickup preferences. Please retry.', 'error')
+    } finally { setSaving(false); suspendDriverDraftAutosave(false) }
+  }
   return (
-    <OnboardShell step={2} total={4} title="Your regular commute" subtitle="Tell us about the journey you already make." onBack={() => nav(-1)} cta="Continue" disabled={!ready} onNext={() => nav('/onboarding/driver/3')}>
+    <OnboardShell step={2} total={4} title="Your regular commute" subtitle="Where you travel, and how you prefer to pick people up." onBack={() => nav('/onboarding/driver/1')} cta="Continue" disabled={!ready} loading={saving} onNext={() => void next()}>
       <div className="stack-4">
         <AddressField label="Home address" value={c.originPlace?.label ?? c.origin} onSelect={(p) => set({ originPlace: p, origin: p.label })} onText={(t) => set({ origin: t, originPlace: undefined })} hint="Never shown to passengers — they only see the part of your route near their pickup." />
-        <AddressField label="Work address" icon="flag" value={c.destinationPlace?.label ?? c.destination} onSelect={(p) => set({ destinationPlace: p, destination: p.label })} onText={(t) => set({ destination: t, destinationPlace: undefined })} />
+        <AddressField label="Work address" icon="flag" value={c.destinationPlace?.label ?? c.destination} onSelect={(p) => set({ destinationPlace: p, destination: p.label })} onText={(t) => set({ destination: t, destinationPlace: undefined })} hint="Your usual work or study destination. Select an address or pin so we can calculate the route." />
         <div className="row-flex">
           <div className="grow"><Select label="Departure time (to work)" value={c.departure} onChange={(departure) => set({ departure })} options={MORNING} /></div>
           <div className="grow"><Select label="Return time (from work)" value={c.returnTime} onChange={(returnTime) => set({ returnTime })} options={EVENING} /></div>
@@ -204,8 +257,19 @@ export function DriverCommute() {
           <p className="small muted">{formatDays(c.days)}</p>
         </div>
         <div className="card row-flex between">
-          <div><strong>Also offer the trip home</strong><p className="small muted">Passengers can join your evening leg separately.</p></div>
+          <div><strong>Also offer the trip home</strong><p className="small muted">{state.onboarded ? 'Accept new evening requests. Turning this off keeps existing passengers and their agreed trips.' : 'Passengers can join your evening leg separately.'}</p></div>
           <Toggle label="Also offer the trip home" checked={c.offerReturn} onChange={(offerReturn) => set({ offerReturn })} />
+        </div>
+        <Select label="How would you like to pick passengers up?" value={c.pickupPolicy} onChange={(pickupPolicy) => set({ pickupPolicy: pickupPolicy as DriverPickupPolicy })} options={DRIVER_PICKUP_OPTIONS} />
+        <p className="small muted">{c.pickupPolicy === 'door_to_door' ? 'Pick passengers up at their requested origin. Your detour limit still applies.' : c.pickupPolicy === 'meeting_point' ? 'Passengers walk to a named public pickup point. Matches respect each passenger’s walking limit.' : 'Use the passenger’s origin or a nearby agreed pickup, within their walking limit.'} Check the pickup is safe and practical before accepting.</p>
+        <div>
+          <div className="row-flex between" style={{ marginBottom: 8 }}>
+            <label id="dev-l" style={{ fontSize: 14, fontWeight: 500 }}>Maximum detour for pickups</label>
+            <strong style={{ color: 'var(--teal-700)' }}>{c.maxDeviationMin} min</strong>
+          </div>
+          <input aria-labelledby="dev-l" className="range" type="range" min={0} max={30} step={1} value={c.maxDeviationMin} onChange={(e) => set({ maxDeviationMin: Number(e.target.value) })} aria-valuetext={`${c.maxDeviationMin} minutes`} />
+          <div className="row-flex between small muted"><span>Stay on my route</span><span>30 minutes</span></div>
+          <p className="small muted">Maximum extra driving time for a matched pickup, including rejoining your route. Choose 0 to avoid a detour.</p>
         </div>
         <Banner tone="info" icon="route">Lifty will only match passengers whose commute reasonably overlaps yours.</Banner>
       </div>
@@ -220,6 +284,7 @@ export function DriverVerification({ manage = false }: { manage?: boolean } = {}
   const { state, update, updateDriver } = useApp()
   const docs = state.driver.docs
   const [expires, setExpires] = useState<Record<string,string>>({})
+  const [saving, setSaving] = useState(false)
   const items: { key: keyof typeof docs; kind: DocKind; title: string; icon: IconName }[] = [
     { key: 'id', kind: 'id', title: 'South African ID', icon: 'doc' },
     { key: 'licence', kind: 'licence', title: "Driver's licence", icon: 'card' },
@@ -227,9 +292,21 @@ export function DriverVerification({ manage = false }: { manage?: boolean } = {}
     { key: 'insurance', kind: 'insurance', title: 'Proof of insurance', icon: 'shield' },
   ]
   const all = Object.values(docs).every(Boolean)
+  async function next() {
+    if (saving || (!manage && !all)) return
+    setSaving(true)
+    suspendDriverDraftAutosave(true)
+    try {
+      if (!manage && !state.onboarded) await api.saveDriverOnboardingDraft(setupDraft(state.driver, 4))
+      nav(manage ? '/d/profile' : '/onboarding/driver/4')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save setup progress. Please retry.', 'error')
+    } finally { setSaving(false); suspendDriverDraftAutosave(false) }
+  }
   return (
-    <OnboardShell step={3} total={4} title="Verification documents" subtitle="Keep Lifty safe and trusted." onBack={() => nav(-1)} cta={manage ? 'Done' : 'Continue'} disabled={!manage && !all} onNext={() => nav(manage ? '/d/profile' : '/onboarding/driver/4')}>
+    <OnboardShell step={3} total={4} title="Verification documents" subtitle="Upload once. A human reviewer checks your current documents." onBack={() => nav(manage ? '/d/profile' : '/onboarding/driver/2')} cta={manage ? 'Done' : 'Continue'} disabled={!manage && !all} loading={saving} onNext={() => void next()}>
       <div className="stack-3">
+        <Banner tone="info" icon="shield">You need an ID, valid driver’s licence, vehicle registration and current insurance. You can finish setup while review is pending; you can offer new lifts once all four are approved.</Banner>
         {items.map((it) => {
           const current = state.driverDocuments.find(d => d.kind === it.kind)
           const expired = !!current?.expiresOn && current.expiresOn < isoDate(0)
@@ -307,7 +384,7 @@ export function DriverSchedule() {
           const back = await directions([c.destinationPlace.location, c.originPlace.location], 'driving')
           legs.push({ direction: 'to_home', origin: c.destinationPlace, destination: c.originPlace, departure: c.returnTime, days: c.days, route: back })
         }
-        await api.saveDriverSetup({ vehicle: d.vehicle, legs, seats: d.seatsOpen || d.vehicle.seats, maxDeviationMin: c.maxDeviationMin, monthlyContribution: d.monthlyContribution })
+        await api.saveDriverSetup({ vehicle: d.vehicle, legs, seats: d.seatsOpen || d.vehicle.seats, maxDeviationMin: c.maxDeviationMin, pickupPolicy: c.pickupPolicy, monthlyContribution: d.monthlyContribution })
       } else {
         throw new Error('Select your home and work on the map and wait for the route to load.')
       }
@@ -323,8 +400,18 @@ export function DriverSchedule() {
   }
 
   return (
-    <OnboardShell step={4} total={4} title="Photos, detour & contribution" subtitle="Help passengers recognise you, and set fair cost-sharing." onBack={() => nav(-1)} cta="Finish set-up" loading={saving} disabled={c.days.length === 0 || over || !route || !!routeErr} onNext={finish}>
+    <OnboardShell step={4} total={4} title="Review your driver setup" subtitle="Add recognition photos, check your journey and set fair cost-sharing." onBack={() => nav('/onboarding/driver/3')} cta={state.onboarded ? 'Save driver setup' : 'Finish set-up'} loading={saving} disabled={c.days.length === 0 || over || !route || !!routeErr} onNext={finish}>
       <div className="stack-5">
+        <div className="card stack-2">
+          <strong>{state.user?.fullName}</strong>
+          <p>{d.vehicle.colour} {d.vehicle.year} {d.vehicle.make} {d.vehicle.model}</p>
+          <button className="btn-text" onClick={() => nav('/onboarding/driver/1')}>Edit name or vehicle</button>
+          <p>{c.origin} → {c.destination}</p>
+          <p className="small muted">{formatDays(c.days)} · {c.departure}{c.offerReturn ? `, return ${c.returnTime}` : ''}</p>
+          <p className="small muted">{DRIVER_PICKUP_OPTIONS.find(option => option.value === c.pickupPolicy)?.label} · maximum {c.maxDeviationMin} min extra driving</p>
+          <button className="btn-text" onClick={() => nav('/onboarding/driver/2')}>Edit route or pickups</button>
+          <p className="small muted">Verification: {Object.values(state.verification).filter(status => status === 'verified').length}/4 documents approved. Uploads do not grant approval.</p>
+        </div>
         <div className="row-flex">
           {state.avatarUrl ? <Avatar first={state.user?.firstName ?? 'D'} hue={24} size={64} src={state.avatarUrl} /> : null}
           <div className="grow">
@@ -335,14 +422,6 @@ export function DriverSchedule() {
           <PhotoPicker label="Photo of your car" sub="Front three-quarter view, plate visible" done={!!d.vehicle.photoUrl} icon="car" capture onFile={async (f) => updateDriver({ vehicle: { ...d.vehicle, photoUrl: await api.uploadPhoto('vehicle', f) } })} />
           {d.vehicle.photoUrl && <img src={d.vehicle.photoUrl} alt="Your car" className="doc-preview" style={{ marginTop: 8 }} />}
           <p className="small muted" style={{ marginTop: 6 }}>Passengers use this photo to find you at pickup.</p>
-        </div>
-        <div>
-          <div className="row-flex between" style={{ marginBottom: 8 }}>
-            <label id="dev-l" style={{ fontSize: 14, fontWeight: 500 }}>Maximum detour for a pickup</label>
-            <strong style={{ color: 'var(--teal-700)' }}>{c.maxDeviationMin} min</strong>
-          </div>
-          <input aria-labelledby="dev-l" className="range" type="range" min={2} max={15} value={c.maxDeviationMin} onChange={(e) => updateDriver({ commute: { ...c, maxDeviationMin: Number(e.target.value) } })} />
-          <p className="small muted">Passengers needing a bigger detour are never matched to you.</p>
         </div>
         <div>
           <TextField label="Monthly contribution per passenger (R)" value={String(d.monthlyContribution)} onChange={(v) => updateDriver({ monthlyContribution: Number(v.replace(/\D/g, '')) || 0 })} inputMode="numeric" error={over ? `Lift clubs share costs — keep it at or below ${rand(cap)} for this route.` : undefined} hint={`Fair share for ${route ? formatDistance(distanceM) : 'your route'}: about ${rand(suggested)} a month (fuel + wear, split by seats).`} />

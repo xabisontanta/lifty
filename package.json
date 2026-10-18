@@ -31,6 +31,9 @@
     "test:safety": "node scripts/test-driver-safety.mjs",
     "test:driver-pilot": "node scripts/test-driver-pilot.mjs",
     "test:driver-holds": "node scripts/test-driver-holds.mjs",
+    "test:driver-pickups": "node scripts/test-driver-pickups.mjs",
+    "test:driver-vehicle": "node scripts/test-driver-vehicle.mjs",
+    "test:vehicle-illustrations": "node scripts/test-vehicle-illustrations.mjs",
     "test:chat-race": "node scripts/test-chat-race.mjs",
     "types:local": "node scripts/generate-local-types.mjs",
     "check:secrets": "node scripts/check-secrets.mjs"

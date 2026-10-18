@@ -24,7 +24,8 @@ const place=(label:string,g:J):Place=>{
 }
 const exception=(e:J):ScheduleException=>({id:e.id,kind:e.kind,date:e.date??'ongoing',note:e.note??undefined,legId:e.leg_id??undefined})
 export function mapAccount(j:J):AccountSnapshot {
- const p=j.profile, q=j.private??{},v=j.vehicle,legs=j.legs??[],commutes:J[]=j.commutes??[]
+ const p=j.profile, q=j.private??{},v=j.vehicle,legs:J[]=[...(j.legs??[])].sort((a:J,b:J)=>Number(a.direction==='to_home')-Number(b.direction==='to_home')),commutes:J[]=j.commutes??[]
+ const primary=legs.find(l=>l.direction==='to_work')??legs[0]
  return {
   user:{id:p.id,isTest:p.is_test===true,role:p.role,firstName:p.first_name,lastInitial:p.last_initial,fullName:[p.first_name,q.last_name].filter(Boolean).join(' '),phone:q.phone??'',avatarHue:hueFor(p.id),memberSince:p.created_at.slice(0,10)},
   onboarded:!!p.onboarding_completed_at,avatarUrl:publicFileUrl('avatars',p.avatar_path),verification:j.verification,
@@ -35,8 +36,8 @@ export function mapAccount(j:J):AccountSnapshot {
    days:c.days,arriveBy:c.arrive_by.slice(0,5),arriveWindowStart:c.arrive_by.slice(0,5),returnTime:c.direction==='to_home'?c.arrive_by.slice(0,5):(commutes.find(x=>x.direction==='to_home')?.arrive_by?.slice(0,5)??'17:00'),
    maxWalkMeters:c.max_walk_m,scheduleMode:c.specific_dates?'dates':'weekly',startDate:c.start_date,endDate:c.end_date??undefined,dates:c.specific_dates??[],skipHolidays:!!c.skip_holidays})),
   driverSetup:v?{vehicle:{registration:v.registration_summary,make:v.make,model:v.model,colour:v.colour,year:String(v.year??''),seats:v.seats_total,bodyType:v.body_type,photoUrl:publicFileUrl('vehicle-photos',v.photo_path)},
-   legs:legs.map((l:J)=>({direction:l.direction,origin:place(l.origin_label,l.originPoint),destination:place(l.destination_label,l.destinationPoint),departure:l.departure_time.slice(0,5),days:l.days,route:{coordinates:l.routeGeometry.coordinates,distanceM:l.route_distance_m,durationS:l.route_duration_s}})),
-   seats:legs[0]?legs[0].seats_open+(j.memberCount??0):v.seats_total,maxDeviationMin:legs[0]?.max_deviation_min??8,monthlyContribution:legs[0]?.monthly_contribution??0}:undefined,
+   legs:legs.map((l:J)=>({direction:l.direction,requestsPaused:!!l.requests_paused,origin:place(l.origin_label,l.originPoint),destination:place(l.destination_label,l.destinationPoint),departure:l.departure_time.slice(0,5),days:l.days,route:{coordinates:l.routeGeometry.coordinates,distanceM:l.route_distance_m,durationS:l.route_duration_s}})),
+   seats:primary?.direction==='to_work'?primary.seats_open+(j.memberCount??0):v.seats_total,maxDeviationMin:primary?.max_deviation_min??8,pickupPolicy:primary?.pickup_policy??'flexible',monthlyContribution:primary?.monthly_contribution??0}:undefined,
   documents:(j.documents??[]).map((d:J)=>({id:d.id,kind:d.kind,status:d.status,expiresOn:d.expires_on??d.expiresOn??undefined,reviewNote:d.review_note??d.reviewNote??undefined})),exceptions:(j.exceptions??[]).map(exception),savedAlert:commutes.some(c=>c.notify_on_match),
   pendingRequests:(j.requests??[]).map((r:J)=>({id:r.id,matchId:r.leg_id,status:r.status,createdAt:r.created_at,startDate:r.start_date})),
  }
@@ -57,7 +58,7 @@ function draftFromWire(d:J):DriverOnboardingDraft|null {
 let draftQueue:Promise<void>=Promise.resolve()
 
 export const pilotMethods: Pick<LiftyApi,
- 'getAccountSnapshot'|'completeOnboarding'|'saveDriverSettings'|'saveDriverOnboardingDraft'|'getDriverOnboardingDraft'|'clearDriverOnboardingDraft'|'setDriverRequestsPaused'|'listExceptions'|'deleteException'|'setPause'|
+ 'getAccountSnapshot'|'completeOnboarding'|'updateProfileName'|'saveDriverSettings'|'saveDriverOnboardingDraft'|'getDriverOnboardingDraft'|'clearDriverOnboardingDraft'|'setDriverRequestsPaused'|'listExceptions'|'deleteException'|'setPause'|
  'requestPickupChange'|'listPickupChanges'|'reviewPickupChange'|'listContributions'|'reportContribution'|'confirmContribution'|'listHistory'|'setMatchAlert'|'getAdminHealth'|'suspendUser'> = {
  async getAccountSnapshot(){
   const {data,error}=await sb().auth.getSession()
@@ -70,6 +71,7 @@ export const pilotMethods: Pick<LiftyApi,
   return snapshot
  },
  async completeOnboarding(){await pilotRpc('complete_onboarding')},
+ async updateProfileName(fullName){return await pilotRpc('update_profile_name',{p_full_name:fullName})},
  async saveDriverOnboardingDraft(draft){
   const owner=currentUserId,payload=draftToWire(draft)
   const save=draftQueue.catch(()=>undefined).then(async()=>{
@@ -81,7 +83,7 @@ export const pilotMethods: Pick<LiftyApi,
  async getDriverOnboardingDraft(){return draftFromWire(await pilotRpc('get_driver_onboarding_draft'))},
  async clearDriverOnboardingDraft(){await pilotRpc('clear_driver_onboarding_draft')},
  async setDriverRequestsPaused(legId,paused){await pilotRpc('set_driver_requests_paused',{p_leg:legId,p_paused:paused})},
- async saveDriverSettings(legId,input){await pilotRpc('save_driver_settings',{p_leg:legId,p_seats:input.seats,p_deviation:input.maxDeviationMin,p_contribution:input.monthlyContribution,p_departure:input.departureTime??null,p_days:input.days??null})},
+ async saveDriverSettings(legId,input){await pilotRpc('save_driver_settings',{p_leg:legId,p_seats:input.seats,p_deviation:input.maxDeviationMin,p_contribution:input.monthlyContribution,p_departure:input.departureTime??null,p_days:input.days??null,p_pickup_policy:input.pickupPolicy??null})},
  async listExceptions(){const {data:user}=await sb().auth.getUser();const {data,error}=await sb().from('schedule_exceptions').select('*').eq('user_id',user.user?.id??'').order('created_at');if(error)throw new ApiError(error.message,'server');return (data??[]).map(exception)},
  async deleteException(id){const {error}=await sb().from('schedule_exceptions').delete().eq('id',id);if(error)throw new ApiError(error.message,'server')},
  async setPause(legId,paused){await pilotRpc('set_club_pause',{p_leg:legId,p_paused:paused})},

@@ -106,6 +106,7 @@ export function DriverHome() {
       )}
       <SectionTitle>Manage</SectionTitle>
       <div className="list">
+        <ProfileRow icon="car" title="Driver setup" subtitle="Review your name, car, route, pickup preferences and documents" onClick={() => nav('/onboarding/driver/1')} />
         <ProfileRow icon="calendar" title="Not driving?" subtitle="Tell your passengers in one tap" onClick={() => nav('/d/exceptions')} />
         <ProfileRow icon="seat" title="Seat availability" subtitle={`${leg?.seatsOpen ?? driver.seatsOpen} of ${driver.vehicle.seats} seats open`} onClick={() => nav('/d/seats')} />
         <ProfileRow icon="wallet" title="Contributions" subtitle="Due, reported and confirmed receipts" onClick={() => nav('/d/contributions')} />
@@ -420,7 +421,7 @@ export function DriverProfile() {
         <ProfileRow icon="wallet" title="Contributions" onClick={() => nav('/d/contributions')} />
         <ProfileRow icon="seat" title="Seat availability" onClick={() => nav('/d/seats')} />
         <ProfileRow icon="calendar" title="Schedule exceptions" onClick={() => nav('/d/exceptions')} />
-        <ProfileRow icon="car" title="Vehicle & commute" subtitle="Update your car, photos or route" onClick={() => nav('/onboarding/driver/1')} />
+        <ProfileRow icon="car" title="Driver setup" subtitle="Name, vehicle, home/work route and pickup preferences" onClick={() => nav('/onboarding/driver/1')} />
       </div>
       <ProfileRow icon="calendar" title="Commute history" onClick={()=>nav('/history')} />
       <SectionTitle>Account</SectionTitle>

@@ -21,11 +21,14 @@ import { hasSupabase } from '@/lib/env'
 /** Screens use this backend interface in every environment, including the isolated local test stack. */
 
 export type DocKind = 'id' | 'licence' | 'vehicle_registration' | 'insurance'
+export type DriverPickupPolicy = 'flexible' | 'door_to_door' | 'meeting_point'
 
 export interface DriverSetupInput {
   vehicle: { registration: string; make: string; model: string; year: string; colour: string; seats: number; bodyType: 'sedan' | 'hatchback' | 'suv' | 'other'; photoUrl?: string }
   legs: {
     direction: LegDirection
+    /** Snapshot-only state: pausing requests preserves already accepted trips. */
+    requestsPaused?: boolean
     origin: Place
     destination: Place
     departure: string
@@ -34,6 +37,7 @@ export interface DriverSetupInput {
   }[]
   seats: number
   maxDeviationMin: number
+  pickupPolicy?: DriverPickupPolicy
   monthlyContribution: number
 }
 
@@ -47,6 +51,7 @@ export interface DriverLegSummary {
   days: Weekday[]
   seatsOpen: number
   maxDeviationMin: number
+  pickupPolicy?: DriverPickupPolicy
   monthlyContribution: number
   routeDistanceM: number
   route: LatLng[]
@@ -109,7 +114,7 @@ export interface DriverOnboardingDraft {
     origin: string; destination: string
     originPlace?: Place; destinationPlace?: Place
     offerReturn: boolean; departure: string; returnTime: string
-    days: Weekday[]; maxDeviationMin: number
+    days: Weekday[]; maxDeviationMin: number; pickupPolicy?: DriverPickupPolicy
   }
   seatsOpen: number
   monthlyContribution: number
@@ -216,11 +221,12 @@ export interface LiftyApi {
   verifyOtp(phone: string, code: string): Promise<AccountSnapshot | null>
   getAccountSnapshot(): Promise<AccountSnapshot | null>
   completeOnboarding(): Promise<void>
+  updateProfileName(fullName: string): Promise<PublicVerification>
   signOut(): Promise<void>
   // onboarding
   savePassengerCommute(plan: CommutePlan): Promise<string>
   saveDriverSetup(setup: DriverSetupInput): Promise<void>
-  saveDriverSettings(legId: string, input: { seats: number; maxDeviationMin: number; monthlyContribution: number; departureTime?: string; days?: Weekday[] }): Promise<void>
+  saveDriverSettings(legId: string, input: { seats: number; maxDeviationMin: number; monthlyContribution: number; pickupPolicy?: DriverPickupPolicy; departureTime?: string; days?: Weekday[] }): Promise<void>
   setDriverRequestsPaused(legId: string, paused: boolean): Promise<void>
   saveDriverOnboardingDraft(draft: DriverOnboardingDraft): Promise<void>
   getDriverOnboardingDraft(): Promise<DriverOnboardingDraft | null>

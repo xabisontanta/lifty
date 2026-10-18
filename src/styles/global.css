@@ -34,6 +34,8 @@ a { color: var(--teal-700); }
 .stack-3 { display: grid; gap: var(--s-3); }
 .stack-4 { display: grid; gap: var(--s-4); }
 .stack-5 { display: grid; gap: var(--s-5); }
+/* A stack is one shrinkable column; native form inputs must not widen it. */
+.stack-2, .stack-3, .stack-4, .stack-5 { grid-template-columns: minmax(0, 1fr); }
 .center { text-align: center; }
 
 /* ===== App frame: full-bleed on phones, device-like on desktop ===== */
@@ -155,7 +157,7 @@ a { color: var(--teal-700); }
 .kv-v.strong { font-weight: 700; }
 
 /* ===== Forms ===== */
-.field { display: grid; gap: 6px; }
+.field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .field > label { font-size: 14px; font-weight: 500; color: var(--text); }
 .field-box { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 0 var(--s-4); background: #fff; border: 1.5px solid var(--grey-200); border-radius: var(--r-input); transition: border-color .15s, box-shadow .15s; }
 .field-box:focus-within { border-color: var(--teal); box-shadow: 0 0 0 4px rgba(0, 179, 134, 0.14); }
@@ -426,6 +428,14 @@ button.row:active { background: var(--mint); }
 .vehicle-card img { width: 120px; height: 80px; object-fit: cover; border-radius: 14px; background: var(--grey-100); flex: none; }
 .vehicle-card.compact { box-shadow: none; padding: 0; background: transparent; }
 .vehicle-card.compact img { width: 88px; height: 58px; }
+.vehicle-visual { flex: none; width: 120px; display: grid; gap: 4px; }
+.vehicle-card .vehicle-visual img { object-fit: contain; background: #fff; }
+.vehicle-visual-caption { display: block; line-height: 1.3; }
+.vehicle-image-empty { width: 120px; min-height: 80px; background: var(--grey-100); border-radius: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; padding: 8px; }
+.vehicle-colour { display: flex; align-items: center; gap: 5px; }
+.vehicle-colour-swatch { display: inline-block; width: 12px; height: 12px; border: 1px solid #aaa; border-radius: 50%; flex: none; }
+.vehicle-card.compact .vehicle-visual, .vehicle-card.compact .vehicle-image-empty { width: 88px; }
+.vehicle-card.compact .vehicle-image-empty { min-height: 58px; }
 .avatar-stack { display: inline-flex; align-items: center; }
 .avatar-stack-item { margin-left: -8px; border-radius: 50%; box-shadow: 0 0 0 2.5px #fff; display: inline-flex; }
 .avatar-stack-item:first-child { margin-left: 0; }

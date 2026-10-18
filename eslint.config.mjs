@@ -14,7 +14,7 @@ export default defineConfig(
     rules: { 'no-unused-vars': 'off', 'no-empty': ['error', { allowEmptyCatch: true }] },
   },
   {
-    files: ['src/**/*.{ts,tsx}', 'tests/**/*.ts', 'supabase/functions/find-matches/{core,handler}.ts'],
+    files: ['src/**/*.{ts,tsx}', 'tests/**/*.ts', 'supabase/functions/find-matches/{core,handler}.ts', 'supabase/functions/vehicle-illustration/handler.ts'],
     extends: [js.configs.recommended, tseslint.configs.recommended],
     plugins: { 'react-hooks': reactHooks },
     linterOptions: { reportUnusedDisableDirectives: false },

@@ -27,6 +27,7 @@ import { authFail } from './authErrors'
 import { markDeliberateSignOut } from '@/lib/notice'
 import { reverseGeocode } from './mapbox'
 import { env } from '@/lib/env'
+import { ownedFilePath } from '@/lib/storagePaths'
 import { holidayName } from '@/lib/holidays'
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- RPCs return jsonb shaped in SQL */
@@ -302,23 +303,24 @@ export const liveApi: LiftyApi = {
     const me = await uid()
     const reg = setup.vehicle.registration.trim().toUpperCase()
     const summary = reg.includes('•') ? reg : reg.length > 4 ? `${reg.slice(0, 2)} ••• ${reg.replace(/\s/g, '').slice(-3)}` : reg
-    const v = await sb().from('vehicles').upsert(
-      {
-        driver_id: me,
+    const photoPath = ownedFilePath(setup.vehicle.photoUrl, 'vehicle-photos', me, env.supabaseUrl)
+    if (setup.vehicle.photoUrl && !photoPath) throw new ApiError('Upload your own car photo before saving this vehicle.', 'invalid')
+    const v = await sb().rpc('save_driver_vehicle', {
+      p_vehicle: {
         make: setup.vehicle.make,
         model: setup.vehicle.model,
         colour: setup.vehicle.colour,
-        year: Number(setup.vehicle.year) || null,
-        body_type: setup.vehicle.bodyType,
-        registration_summary: summary,
-        seats_total: setup.vehicle.seats,
-        photo_path: setup.vehicle.photoUrl ?? null,
+        year: Number(setup.vehicle.year),
+        bodyType: setup.vehicle.bodyType,
+        registrationSummary: summary,
+        seats: setup.vehicle.seats,
+        photoPath: photoPath ?? null,
       },
-      { onConflict: 'driver_id' },
-    )
+    })
     if (v.error) fail(v.error)
+    let returnLeg: string | undefined
     for (const leg of setup.legs) {
-      const { error } = await sb().rpc('upsert_driver_leg', {
+      const { data, error } = await sb().rpc('upsert_driver_leg', {
         p_direction: leg.direction,
         p_origin_label: leg.origin.label,
         p_origin_lng: leg.origin.location.lng,
@@ -333,8 +335,22 @@ export const liveApi: LiftyApi = {
         p_days: leg.days,
         p_seats: setup.seats,
         p_max_deviation: setup.maxDeviationMin,
+        p_pickup_policy: setup.pickupPolicy ?? 'flexible',
         p_contribution: setup.monthlyContribution,
       })
+      if (error) fail(error)
+      if (leg.direction === 'to_home') returnLeg = data as string
+    }
+    // Closing the return offer only pauses fresh requests. The evening route,
+    // accepted members and generated trips must remain available to its club.
+    const returnOffered = setup.legs.some(leg => leg.direction === 'to_home')
+    if (!returnOffered) {
+      const { data, error } = await sb().from('driver_legs').select('id').eq('driver_id', me).eq('direction', 'to_home').maybeSingle()
+      if (error) fail(error)
+      returnLeg = data?.id
+    }
+    if (returnLeg) {
+      const { error } = await sb().rpc('set_driver_requests_paused', { p_leg: returnLeg, p_paused: !returnOffered })
       if (error) fail(error)
     }
   },
@@ -499,6 +515,7 @@ export const liveApi: LiftyApi = {
       days: days(l.days),
       seatsOpen: Number(l.seatsOpen),
       maxDeviationMin: Number(l.maxDeviationMin),
+      pickupPolicy: l.pickupPolicy ?? 'flexible',
       monthlyContribution: Number(l.monthlyContribution),
       routeDistanceM: Number(l.routeDistanceM),
       route: line(l.route),

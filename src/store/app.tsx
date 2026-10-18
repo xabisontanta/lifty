@@ -10,7 +10,7 @@ import type {
   UserProfile,
   Weekday,
 } from '@/domain/types'
-import { api, isLive, type AccountSnapshot, type DriverDocument } from '@/services/api'
+import { api, isLive, type AccountSnapshot, type DriverDocument, type DriverPickupPolicy } from '@/services/api'
 import { supabase } from '@/services/supabase'
 import { clearLiveCaches } from '@/services/liveApi'
 import { setNotice, wasDeliberateSignOut } from '@/lib/notice'
@@ -32,6 +32,7 @@ export interface DriverSetup {
     returnTime: string
     days: Weekday[]
     maxDeviationMin: number
+    pickupPolicy: DriverPickupPolicy
   }
   seatsOpen: number
   /** passengers the driver has accepted */
@@ -105,6 +106,7 @@ export const initialState: AppState = {
       returnTime: '17:00',
       days: [0, 1, 2, 3, 4],
       maxDeviationMin: 8,
+      pickupPolicy: 'flexible',
     },
     seatsOpen: 2,
     members: [],
@@ -149,7 +151,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const base=freshLiveState()
     const driver: DriverSetup = input ? {...base.driver,vehicle:input.vehicle,seatsOpen:input.seats,monthlyContribution:input.monthlyContribution,
       commute:{...base.driver.commute,origin:first?.origin.label ?? '',destination:first?.destination.label ?? '',originPlace:first?.origin,destinationPlace:first?.destination,
-        departure:first?.departure ?? '06:30',returnTime:evening?.departure ?? '17:00',offerReturn:!!evening,days:first?.days ?? [],maxDeviationMin:input.maxDeviationMin}} : base.driver
+        departure:first?.departure ?? '06:30',returnTime:evening?.departure ?? '17:00',offerReturn:!!evening&&!evening.requestsPaused,days:first?.days ?? [],maxDeviationMin:input.maxDeviationMin,pickupPolicy:input.pickupPolicy??'flexible'}} : base.driver
     if (draft && !snapshot.onboarded) {
       driver.vehicle = {...driver.vehicle,...draft.vehicle}
       driver.commute = {...driver.commute,...draft.commute}

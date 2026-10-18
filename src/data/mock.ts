@@ -304,10 +304,3 @@ export const RETURN_MATCHES: Match[] = MATCHES.slice(0, 2).map((m, i) => ({
   pickupEta: i === 0 ? '17:05' : '17:22',
   arrivalEta: i === 0 ? '18:05' : '18:20',
 }))
-
-/** Shown when a driver hasn't uploaded their own car photo yet. */
-export function vehicleImage(v: { photoUrl?: string; bodyType?: string }): string {
-  if (v.photoUrl) return v.photoUrl
-  const t = v.bodyType === 'hatchback' || v.bodyType === 'suv' ? v.bodyType : 'sedan'
-  return `/images/car-${t}.webp`
-}

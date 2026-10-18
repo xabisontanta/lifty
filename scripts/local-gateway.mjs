@@ -7,6 +7,7 @@ import net from 'node:net'
 import { execSync } from 'node:child_process'
 import { createClient } from '@supabase/supabase-js'
 import { handle } from '../supabase/functions/find-matches/handler.ts'
+import { handle as vehicleIllustration, openAiProvider } from '../supabase/functions/vehicle-illustration/handler.ts'
 import { existsSync, readFileSync } from 'node:fs'
 import { assertLocalContainer, assertLoopbackUrl, sandboxDirectory } from './sandbox-safety.mjs'
 
@@ -28,17 +29,41 @@ const db = createClient(s.API_URL, s.SERVICE_ROLE_KEY, { auth: { persistSession:
 const localMapToken = existsSync('.env') ? readFileSync('.env', 'utf8').split(/\r?\n/).find(line => line.startsWith('VITE_MAPBOX_TOKEN='))?.slice('VITE_MAPBOX_TOKEN='.length).trim() : null
 const mapboxSecret = process.env.MAPBOX_TOKEN || localMapToken || null
 if (!mapboxSecret) throw new Error('Configure MAPBOX_TOKEN for road-based sandbox searches.')
+const illustrationKey = process.env.VEHICLE_ILLUSTRATION_GENERATION_ENABLED === 'true' ? process.env.OPENAI_API_KEY : null
+const illustrationOutput = db.storage.from('vehicle-illustrations')
+const illustrationDeps = {
+  db, provider: illustrationKey ? openAiProvider(illustrationKey) : null,
+  async downloadReference(path) {
+    const result = await db.storage.from('vehicle-illustration-references').download(path)
+    if (result.error || !result.data) throw new Error('Reference unavailable')
+    return { bytes: new Uint8Array(await result.data.arrayBuffer()), contentType: result.data.type }
+  },
+  async upload(path, file) {
+    const result = await illustrationOutput.upload(path, file.bytes, { contentType: file.contentType, upsert: false })
+    if (result.error) throw new Error('Image upload unavailable')
+  },
+  async signedUrl(path) {
+    const result = await illustrationOutput.createSignedUrl(path, 900)
+    if (result.error || !result.data?.signedUrl) throw new Error('Image unavailable')
+    return result.data.signedUrl
+  },
+  async remove(path) { await illustrationOutput.remove([path]) },
+  log: message => console.error('[vehicle-illustration]', message),
+}
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.url?.startsWith('/functions/v1/find-matches')) {
+    const functionPath = req.url?.split('?')[0]
+    if (functionPath === '/functions/v1/find-matches' || functionPath === '/functions/v1/vehicle-illustration') {
       const chunks = []
       let bytes = 0
       for await (const c of req) { bytes += c.length; if (bytes > 1_000_000) { res.writeHead(413); res.end('request too large'); return }; chunks.push(c) }
       const headers = new Headers()
       for (const [k, v] of Object.entries(req.headers)) if (v != null) headers.set(k, Array.isArray(v) ? v.join(', ') : String(v))
       const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.concat(chunks)
-      const response = await handle(new Request(`http://localhost${req.url}`, { method: req.method, headers, body }), { db, mapboxSecret, log: (m) => console.error('[find-matches]', m) })
+      const request = new Request(`http://localhost${req.url}`, { method: req.method, headers, body })
+      const response = functionPath === '/functions/v1/vehicle-illustration' ? await vehicleIllustration(request, illustrationDeps)
+        : await handle(request, { db, mapboxSecret, log: (m) => console.error('[find-matches]', m) })
       res.writeHead(response.status, Object.fromEntries(response.headers))
       res.end(Buffer.from(await response.arrayBuffer()))
       return
@@ -68,6 +93,6 @@ server.on('upgrade', (req, socket, head) => {
 })
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`gateway on http://127.0.0.1:${PORT}  →  ${s.API_URL}  (find-matches served locally)`)
+  console.log(`gateway on http://127.0.0.1:${PORT}  →  ${s.API_URL}  (find-matches and vehicle-illustration served locally)`)
   console.log(`VITE_SUPABASE_URL=http://127.0.0.1:${PORT}`)
 })
