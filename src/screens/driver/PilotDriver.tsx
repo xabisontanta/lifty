@@ -12,7 +12,7 @@ import {NavigateButton,GraceBar} from '@/components/ui/extras'
 import {Banner,BottomSheet,Card,CardSkeleton,EmptyState,ErrorState,LiftyButton,Screen,ScreenBody,ScreenHeader,SecondaryButton,Select,StatusBadge,TextField,Toggle,useToast} from '@/components/ui/kit'
 import {shareCommute} from '@/services/share'
 import {riderStatusLabel} from './driverJourney'
-import {ensureNotificationPermission} from '@/services/notifications'
+import {DeviceNotificationsControl} from '@/components/notifications/DeviceNotificationsControl'
 
 export function DriverControls({seatsOnly=false}:{seatsOnly?:boolean}){
  const nav=useNavigate(),toast=useToast(),{state,update}=useApp(),q=useDriverLegs()
@@ -50,7 +50,7 @@ export function DriverControls({seatsOnly=false}:{seatsOnly?:boolean}){
   <LiftyButton disabled={!leg||pauseBusy} loading={busy} onClick={()=>void save()}>Publish settings</LiftyButton>
   {!seatsOnly&&<Card><h2 className="h3">New lift requests</h2><p className="small muted">{leg.requestsPaused?'Paused for this leg. Existing passengers keep their arrangements.':'Open to compatible passengers. Pausing does not cancel any accepted trips.'}</p><SecondaryButton loading={pauseBusy} disabled={busy} onClick={()=>void pauseRequests(!leg.requestsPaused)}>{leg.requestsPaused?'Reopen new requests':'Pause new requests'}</SecondaryButton></Card>}
   {!seatsOnly&&<Card><div className="row-flex between"><span>Live location consent</span><Toggle label="Live location consent" checked={state.sharingConsent} onChange={v=>void preference({location:v})}/></div><div className="row-flex between"><span>Low-data mode</span><Toggle label="Low-data mode" checked={state.lowData} onChange={v=>void preference({lowData:v})}/></div></Card>}
-  {!seatsOnly&&<Card><h2 className="h3">Commute notifications</h2><p className="small muted">Allow alerts on this device. Your requests and messages remain in the inbox if an alert cannot be delivered.</p><SecondaryButton onClick={async()=>{const granted=await ensureNotificationPermission();if(granted)window.dispatchEvent(new Event('lifty:enable-push'));toast(granted?'Notification permission granted on this device.':'Notifications are blocked or unavailable. Use your inbox and device settings.',granted?'success':'info')}}>Enable device notifications</SecondaryButton></Card>}
+  {!seatsOnly&&<DeviceNotificationsControl/>}
  </div>}
  </ScreenBody></Screen>
 }

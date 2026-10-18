@@ -2,6 +2,8 @@
 
 Branch: `codex/driver-reliable-pilot`. Review locally before any merge to main. No hosted database migration, provider change, paid preview backend or production deployment is part of this review.
 
+This onboarding review records build `5d1fce2`. The [notification follow-up](driver-notification-review.md) has separate verification evidence; the running preview remains on this build while the user tests it.
+
 ## Implemented
 
 - Driver setup is visible from Home and Profile. Four steps cover the driver's real name, make/model/year/colour/body style and seats; mapped home/work commute, travel days/times, pickup style and 0–30 minute detour; four verification documents; then photos, summary and contribution. Continue explicitly saves new-driver drafts before navigating.

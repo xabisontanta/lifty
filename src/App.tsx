@@ -60,7 +60,8 @@ function LiveAlerts() {
     const enablePush=()=>{
       const n=++pushGeneration
       removePush?.();removePush=undefined
-      void registerPush(async(token,platform)=>{if(active&&n===pushGeneration&&currentUserId===accountId)await api.savePushToken(token,platform)}).then(remove=>{if(active&&n===pushGeneration)removePush=remove;else remove()})
+      const isCurrent=()=>active&&n===pushGeneration&&currentUserId===accountId
+      void registerPush(async(token,platform)=>{if(isCurrent())await api.savePushToken(token,platform)}, {isCurrent}).then(remove=>{if(isCurrent())removePush=remove;else remove()})
     }
     enablePush()
     window.addEventListener('lifty:enable-push',enablePush)

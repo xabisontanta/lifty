@@ -28,6 +28,7 @@ import { markDeliberateSignOut } from '@/lib/notice'
 import { reverseGeocode } from './mapbox'
 import { env } from '@/lib/env'
 import { ownedFilePath } from '@/lib/storagePaths'
+import { clearNativePushDestination } from './notifications'
 import { holidayName } from '@/lib/holidays'
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- RPCs return jsonb shaped in SQL */
@@ -209,7 +210,13 @@ const nextMonthFirst = () => {
   return new Date(d.getFullYear(), d.getMonth() + 1, 1).toISOString().slice(0, 10)
 }
 
-export function clearLiveCaches() { matchCache.clear(); try { for(const k of Object.keys(localStorage)) if(k.startsWith(COMMUTE_KEY)||k==='lifty.state.v1') localStorage.removeItem(k) } catch {} }
+const pushDestinationRequests=new Set<AbortController>()
+export function clearLiveCaches() {
+  matchCache.clear()
+  for(const request of pushDestinationRequests)request.abort()
+  pushDestinationRequests.clear()
+  try { for(const k of Object.keys(localStorage)) if(k.startsWith(COMMUTE_KEY)||k==='lifty.state.v1') localStorage.removeItem(k) } catch {}
+}
 // ---------- implementation ----------
 export const liveApi: LiftyApi = {
   ...pilotMethods,
@@ -246,12 +253,17 @@ export const liveApi: LiftyApi = {
     let token:string|null=null
     try{token=localStorage.getItem('lifty.push.device')}catch{}
     markDeliberateSignOut()
+    clearLiveCaches()
+    // Stop registration callbacks immediately. Native revocation is bounded and
+    // records a retry marker when it cannot finish, including offline sign-out.
+    const nativeCleanup=clearNativePushDestination().catch(()=>undefined)
     // best effort: if the session is already dead (or we are offline) this must not block signing out
     try{if(token&&currentUserId)await sb().from('push_tokens').delete().eq('user_id',currentUserId).eq('token',token)}catch{/* ignore */}
-    clearLiveCaches();sessionStorage.removeItem(PENDING_KEY)
+    sessionStorage.removeItem(PENDING_KEY)
     // scope 'local' = THIS device only: it works offline and never ends the user's sessions on their other devices/tabs
     // (the default, 'global', would). Local sign-out cannot fail on a network or expired-token error.
     await sb().auth.signOut({scope:'local'}).catch(()=>undefined)
+    await nativeCleanup
     try {
       localStorage.removeItem(COMMUTE_KEY)
       localStorage.removeItem(PENDING_KEY)
@@ -640,7 +652,15 @@ export const liveApi: LiftyApi = {
       if (ch) void sb().removeChannel(ch)
     }
   },
-  async savePushToken(token,platform){await pilotRpc('register_push_destination',{p_token:token,p_platform:platform})},
+  async savePushToken(token,platform){
+    const controller=new AbortController()
+    pushDestinationRequests.add(controller)
+    const timer=setTimeout(()=>controller.abort(),12000)
+    try{
+      const {error}=await sb().rpc('register_push_destination',{p_token:token,p_platform:platform}).abortSignal(controller.signal)
+      if(error)fail(error)
+    }finally{clearTimeout(timer);pushDestinationRequests.delete(controller)}
+  },
 
   async submitRating({ driverId, stars, tags, comment, legId, instanceId }) {
     const me = await uid()

@@ -96,6 +96,21 @@ async function backend(page: Page): Promise<Fixture> {
   return fixture
 }
 
+test('browser notification settings confirm permission without claiming native push registration', async ({ page }) => {
+  await backend(page)
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'Notification', { configurable: true, value: class {
+      static permission = 'granted'
+      static async requestPermission() { return 'granted' }
+    } })
+  })
+  await page.goto('/d/settings', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByText('Browser alerts work while Lifty is open.', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'Enable device notifications', exact: true }).click()
+  await expect(page.getByText('Browser alerts are allowed while Lifty is open.', { exact: true })).toBeVisible()
+  await expect(page.getByText('This device is registered for push alerts.', { exact: false })).toHaveCount(0)
+})
+
 test('open driver inbox catches up after reconnect and distinguishes withdrawn requests', async ({ page }) => {
   const f = await backend(page)
   await page.goto('/d/requests')

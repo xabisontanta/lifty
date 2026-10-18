@@ -16,6 +16,7 @@ import { clearLiveCaches } from '@/services/liveApi'
 import { setNotice, wasDeliberateSignOut } from '@/lib/notice'
 import { hasStoredLogin, isSessionProblem, isTransientProblem, restoreFailureMessage } from '@/services/sessionErrors'
 import { disposeTrackingFeeds } from '@/services/tracking'
+import { clearNativePushDestination } from '@/services/notifications'
 import { useRef } from 'react'
 
 export interface DriverSetup {
@@ -191,6 +192,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
    const {data}=client.auth.onAuthStateChange((event,session)=>{
     if(!isLive())return
     const id=session?.user.id ?? null
+    if(!id || (previousId!==null && id!==previousId)) void clearNativePushDestination().catch(()=>undefined)
     if(id!==previousId){
      // a session that vanishes by itself (refresh token rejected, signed out from another tab) is explained, not silent
      if(!id && previousId!==null && !wasDeliberateSignOut()) setNotice('You were signed out. Please sign in again.')
