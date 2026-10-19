@@ -6,5 +6,5 @@
     "strict": true, "noUnusedLocals": false, "noFallthroughCasesInSwitch": true,
     "baseUrl": ".", "paths": { "@/*": ["src/*"] }
   },
-  "include": ["src", "supabase/functions/find-matches/core.ts", "supabase/functions/find-matches/handler.ts", "supabase/functions/vehicle-illustration/handler.ts"]
+  "include": ["src", "supabase/functions/find-matches/core.ts", "supabase/functions/find-matches/handler.ts", "supabase/functions/vehicle-illustration/handler.ts", "supabase/functions/pilot-worker/handler.ts"]
 }

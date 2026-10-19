@@ -28,7 +28,9 @@ Configuration references: [background-geolocation installation](https://github.c
 
 ## Outstanding native gates
 
-The 2026-10-08 Windows audit found no `java` or `adb` in PATH, no `JAVA_HOME`/`ANDROID_HOME`/`ANDROID_SDK_ROOT`, and no Android Studio/JDK/SDK in the standard Program Files or user-local install directories. `android/app/google-services.json` is absent. Native compilation, installation, and device behavior are not verified by web builds or unit tests.
+The 19 October 2026 check still found no `java` or `adb` in PATH or standard Android toolchain installation. Native compilation, installation, and device behavior are not verified by web builds or unit tests.
+
+The user-approved Firebase project `lifty-ca454` was created on the no-cost Spark plan on 19 October 2026. Billing was not linked; Analytics, Gemini and Developer Program enrolment were left off during creation. Android app `za.co.lifty.app` is registered as **Lifty Android pilot**, and the console confirms FCM HTTP v1 enabled. Its downloaded `android/app/google-services.json` was validated against the project/package and installed locally; it remains ignored by Git. No private server key was created, no worker was deployed or activated, and no device delivery was tested. See [push activation](push-delivery-activation.md) before installing delivery credentials.
 
 The installed background-geolocation 1.2.26 plugin documents Capacitor through version 7; this application uses Capacitor 8. Its peer dependency allows the version, but native compilation and device compatibility still need verification.
 
@@ -37,7 +39,7 @@ The plugin offers no native deadline option. If Android suspends JavaScript whil
 Required configuration:
 
 1. Install Android Studio with SDK 36 and the JDK version required by Capacitor 8 (JDK 21); set SDK/JDK paths.
-2. Register the existing app ID in the authorized Firebase project; place its client `google-services.json` in `android/app/`. Keep the separate Firebase service account private in the server secret store.
+2. On another checkout, download the existing app's client `google-services.json` from project `lifty-ca454` into `android/app/` (already installed in this checkout). Server delivery separately requires a narrowly scoped Firebase service account in the server secret store and explicit activation; the client file does not enable the worker.
 3. Build and sync using `npm run build` then `npx cap sync android`. Compile with `.\gradlew.bat assembleDebug` from the Android directory. Use the authorized test device without opening a visible helper window.
 
 ## Physical device acceptance checklist

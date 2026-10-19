@@ -20,7 +20,7 @@ These tests do not prove physical delivery or remote token revocation. Capacitor
 
 ## Remaining Android gates
 
-- `android/app/google-services.json` is absent. Device registration and closed-app receipt require the authorized Firebase project and server delivery credentials.
+- Follow-up on 19 October: the approved Firebase project `lifty-ca454` and Android registration now exist, and the matching ignored `android/app/google-services.json` is installed locally. FCM HTTP v1 is enabled. Server delivery credentials, native compilation and actual receipt remain pending; see [current Android setup](tracking-validation.md).
 - No Java/ADB commands, Android SDK/JDK environment configuration, or standard Android Studio/JDK/SDK installations were found during the 18 October check. Native compilation and installation remain unverified.
 - Run `cap sync android` before compiling so the generated native assets include the source legacy-bridge and native-HTTP configuration. The current generated assets are not evidence of a synced build.
 - The installed location plugin has no native deadline. A JavaScript timer and server rejection do not prove stationary, locked-screen GPS shutdown. The existing [physical-device checklist](tracking-validation.md) remains required, including expiry, withdrawal, completion, logout, account changes and closed-app push.
